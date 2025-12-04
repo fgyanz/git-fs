@@ -1,10 +1,15 @@
 #define FUSE_USE_VERSION 312
 
-#include <fuse3/fuse_lowlevel.h>
-#include <string.h>
-#include <stdlib.h>
-#include <stdio.h>
+#include <errno.h>
 #include <limits.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include <fuse3/fuse_lowlevel.h>
+#include <git2.h>
 
 #define GITFS_VERSION 	"0.1"
 #define FUSE_CLONE_FD	1
@@ -13,6 +18,10 @@
 struct gitfs_conf {
 	char *mnt;
 	char *repo;
+};
+
+struct gitfs_tls {
+	git_repository *repo;
 };
 
 enum {
@@ -36,21 +45,85 @@ static struct fuse_opt gitfs_opts[] = {
 	FUSE_OPT_END
 };
 
-static void
-gitfs_init(void *userdata, struct fuse_conn_info *conn)
+static pthread_key_t gitfs_tls_key;
+static struct gitfs_conf conf;
+
+struct gitfs_tls *
+get_gitfs_tls(void)
 {
-	return;
+	int err;
+	struct gitfs_tls *tls;
+
+	if ((tls = pthread_getspecific(gitfs_tls_key)))
+		return tls;
+
+	tls = calloc(1, sizeof(*tls));
+	if (tls == NULL)
+		return NULL;
+
+	pthread_setspecific(gitfs_tls_key, tls);
+
+	return tls;
+}
+
+git_repository *
+get_gitfs_repo(void)
+{
+	char *repo_path = conf.repo;
+	struct gitfs_tls *tls = get_gitfs_tls();
+
+	if (tls == NULL)
+		return NULL;
+	if (tls->repo)
+		return tls->repo;
+
+	if (git_repository_open(&tls->repo, repo_path))
+		return NULL;
+
+	return tls->repo;
+}
+
+static void
+thread_cleanup(void *priv)
+{
+	struct gitfs_tls *tls = priv;
+
+	if (tls == NULL)
+		return;
+	if (tls->repo)
+		git_repository_free(tls->repo);
+
+	free(tls);
+}
+
+static void
+gitfs_init(void *priv, struct fuse_conn_info *conn)
+{
+	git_libgit2_init();
+	pthread_key_create(&gitfs_tls_key, thread_cleanup);
+}
+
+static void
+gitfs_destroy(void *priv)
+{
+	git_libgit2_shutdown();
 }
 
 static void
 gitfs_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 {
-	return;
+	git_repository *repo = get_gitfs_repo();
+
+	if (repo == NULL) {
+		fuse_reply_err(req, EIO);
+		return;
+	}
 }
 
 static const struct fuse_lowlevel_ops ops = {
 	.getattr = gitfs_getattr,
 	.init = gitfs_init,
+	.destroy = gitfs_destroy,
 	/*
 	 * .open
 	 * .read
@@ -96,8 +169,6 @@ set_gitfs_conf(struct fuse_args *args, struct gitfs_conf *conf)
 {
 	char *repo, *mnt;
 
-	memset(conf, 0, sizeof(*conf));
-
 	if (fuse_opt_parse(args, conf, gitfs_opts, gitfs_opt_handler))
 		exit(EXIT_FAILURE);
 
@@ -131,7 +202,6 @@ main(int argc, char *argv[])
 	struct fuse_session *se;
 	struct fuse_loop_config *c;
 	struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
-	struct gitfs_conf conf;
 
 	if (argc == 1) {
 		print_help();
