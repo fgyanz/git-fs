@@ -1,4 +1,4 @@
-#define FUSE_USE_VERSION 312
+#define FUSE_USE_VERSION FUSE_MAKE_VERSION(3, 17)
 
 #include <errno.h>
 #include <limits.h>
@@ -11,9 +11,13 @@
 #include <fuse3/fuse_lowlevel.h>
 #include <git2.h>
 
-#define GITFS_VERSION 	"0.1"
-#define FUSE_CLONE_FD	1
-#define FUSE_DAEMON	1
+#include "inode.h"
+#include "tree.h"
+
+#define GITFS_VERSION    "0.1"
+#define FUSE_CLONE_FD    1
+#define FUSE_DAEMON      1
+#define GITFS_PERM       0550
 
 struct gitfs_conf {
 	char *mnt;
@@ -29,6 +33,12 @@ enum {
 	OPT_REPOSITORY_PATH,
 	OPT_HELP,
 	OPT_VERSION,
+};
+
+enum {
+	DIR_CURRENT = 0,
+	DIR_PARENT,
+	DIR_DEFAULTS
 };
 
 #define GIT_OPT_KEY(t, p, k) { t, offsetof(struct gitfs_conf, p), k }
@@ -100,6 +110,10 @@ static void
 gitfs_init(void *priv, struct fuse_conn_info *conn)
 {
 	git_libgit2_init();
+
+	if (tree_init())
+		exit(EXIT_FAILURE);
+
 	pthread_key_create(&gitfs_tls_key, thread_cleanup);
 }
 
@@ -110,26 +124,154 @@ gitfs_destroy(void *priv)
 }
 
 static void
+gitfs_lookup(fuse_req_t req, fuse_ino_t parent, const char *name)
+{
+	struct inode *p, *n;
+	struct fuse_entry_param e;
+	git_repository *repo;
+
+	memset(&e, 0, sizeof(e));
+
+	p = get_tree_node(parent);
+	if (!p) {
+		fuse_reply_err(req, ENOTDIR);
+		return;
+	}
+
+	repo = get_gitfs_repo();
+	if (!repo)
+		return;
+
+	n = p->ops->lookup(repo, p, name);
+	if (!n) {
+		fuse_reply_err(req, ENOENT);
+		return;
+	}
+
+	e.ino = n->ino;
+	e.attr.st_mode = n->mode | GITFS_PERM;
+	e.attr.st_nlink = nlink(n->mode);
+	e.attr.st_size = n->size;
+	fuse_reply_entry(req, &e);
+}
+
+static void
 gitfs_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 {
-	git_repository *repo = get_gitfs_repo();
+	struct stat st;
+	struct inode *n;
 
-	if (repo == NULL) {
+	n = get_tree_node(ino);
+	if (!n) {
+		fuse_reply_err(req, ENOENT);
+		return;
+	}
+
+	memset(&st, 0, sizeof(st));
+
+	st.st_uid = getuid();
+	st.st_gid = getgid();
+	st.st_size = n->size;
+	st.st_mode = n->mode | GITFS_PERM;
+	st.st_nlink = nlink(n->mode);
+
+	fuse_reply_attr(req, &st, 1.0);
+}
+
+static void
+gitfs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size,
+              off_t off, struct fuse_file_info *fi)
+{
+	char *buf, *b, *name;
+	size_t sz, bsz, ndirs;
+	struct stat st;
+	struct inode *n, *p;
+	off_t i, s;
+
+	p = get_tree_node(ino);
+	if (!p) {
+		fuse_reply_err(req, ENOENT);
+		return;
+	}
+
+	buf = calloc(size, sizeof(char));
+	if (!buf) {
+		fuse_reply_err(req, ENOMEM);
+		return;
+	}
+
+	ndirs = count_tree_children(p) + DIR_DEFAULTS;
+	bsz = size;
+
+	for (i = off, b = buf; i < ndirs; b += sz) {
+		switch (i) {
+		case DIR_PARENT:
+			n = p->parent;
+			name = "..";
+			break;
+		case DIR_CURRENT:
+			n = p;
+			name = ".";
+			break;
+		default:
+			s = i - DIR_DEFAULTS;
+			n = s ? get_tree_sibling(p->child, s) : p->child;
+			name = n->name;
+		}
+		st.st_ino = n->ino;
+		st.st_mode = (n->mode | GITFS_PERM) << 12;
+		sz = fuse_add_direntry(req, b, bsz, name, &st, ++i);
+		if (sz > bsz)
+			break;
+
+		bsz -= sz;
+	}
+
+	fuse_reply_buf(req, buf, size - bsz);
+	free(buf);
+}
+
+static void
+gitfs_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
+{
+	struct inode *n;
+	git_repository *repo;
+
+	n = get_tree_node(ino);
+	if (!n) {
+		fuse_reply_err(req, ENOENT);
+		return;
+	}
+
+	repo = get_gitfs_repo();
+	if (!repo)
+		return;
+
+	if (n->ops->update(repo, n)) {
 		fuse_reply_err(req, EIO);
 		return;
 	}
+
+	fuse_reply_open(req, fi);
+}
+
+static void
+gitfs_releasedir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
+{
+	fuse_reply_err(req, 0);
 }
 
 static const struct fuse_lowlevel_ops ops = {
 	.getattr = gitfs_getattr,
 	.init = gitfs_init,
 	.destroy = gitfs_destroy,
+	.lookup = gitfs_lookup,
+	.readdir = gitfs_readdir,
+	.releasedir = gitfs_releasedir,
+	.opendir = gitfs_opendir,
 	/*
 	 * .open
 	 * .read
-	 * .opendir
-	 * .readdir
-	 * .lookup
 	 */
 };
 
@@ -192,7 +334,7 @@ set_gitfs_conf(struct fuse_args *args, struct gitfs_conf *conf)
 static void
 set_fuse_args(struct fuse_args *args)
 {
-	//fuse_opt_add_arg(args, "auto_cache");
+	fuse_opt_add_arg(args, "-oauto_unmount,default_permissions,ro");
 }
 
 int
