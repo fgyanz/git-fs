@@ -39,7 +39,7 @@ struct inode;
 struct inode_ops {
 	int (*update)(struct git_repository *, struct inode *);
 	struct inode * (*lookup)(struct git_repository *, struct inode *,const char *);
-//	int (*open)();
+	int (*open)(struct git_repository *, struct inode *);
 };
 
 struct inode {
@@ -57,6 +57,7 @@ struct inode {
 	struct inode *next_free;
 	struct inode_ops *ops;
 	struct git_object *obj;
+	int backing_id;
 };
 
 extern struct inode_ops *get_inode_ops(unsigned);

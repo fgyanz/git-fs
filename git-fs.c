@@ -22,6 +22,7 @@
 struct gitfs_conf {
 	char *mnt;
 	char *repo;
+	int passthrough;
 };
 
 struct gitfs_tls {
@@ -113,6 +114,14 @@ gitfs_init(void *priv, struct fuse_conn_info *conn)
 
 	if (tree_init())
 		exit(EXIT_FAILURE);
+
+	conn->no_interrupt = 1;
+	conf.passthrough = 1;
+
+	if (!fuse_set_feature_flag(conn, FUSE_CAP_PASSTHROUGH)) {
+		fprintf(stderr, "Failed to set FUSE_CAP_PASSTHROUGH\n");
+		conf.passthrough = 0;
+	}
 
 	pthread_key_create(&gitfs_tls_key, thread_cleanup);
 }
@@ -261,6 +270,73 @@ gitfs_releasedir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 	fuse_reply_err(req, 0);
 }
 
+static void
+gitfs_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
+{
+	struct inode *n;
+	git_repository *repo;
+	int fd, id;
+
+	n = get_tree_node(ino);
+	if (!n) {
+		fuse_reply_err(req, ENOENT);
+		return;
+	}
+
+	repo = get_gitfs_repo();
+	if (!repo)
+		return;
+
+	fd = n->ops->open(repo, n);
+	if (fd == -1) {
+		fuse_reply_err(req, errno);
+		return;
+	}
+
+	fi->fh = fd;
+	fi->keep_cache = 0;
+
+	if (conf.passthrough) {
+		id = fuse_passthrough_open(req, fd);
+		if (id == 0)
+			conf.passthrough = 0;
+		else
+			fi->backing_id = n->backing_id = id;
+	}
+
+	fuse_reply_open(req, fi);
+}
+
+static void
+gitfs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
+           struct fuse_file_info *fi)
+{
+	fuse_reply_err(req, ENOSYS);
+}
+
+static void
+gitfs_release(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
+{
+	int fd;
+	struct inode *n;
+
+	n = get_tree_node(ino);
+	if (!n) {
+		fuse_reply_err(req, ENOENT);
+		return;
+	}
+
+	fd = fi->fh;
+
+	if (n->backing_id) {
+		fuse_passthrough_close(req, n->backing_id);
+		n->backing_id = 0;
+	}
+
+	close(fd);
+	fuse_reply_err(req, 0);
+}
+
 static const struct fuse_lowlevel_ops ops = {
 	.getattr = gitfs_getattr,
 	.init = gitfs_init,
@@ -269,10 +345,9 @@ static const struct fuse_lowlevel_ops ops = {
 	.readdir = gitfs_readdir,
 	.releasedir = gitfs_releasedir,
 	.opendir = gitfs_opendir,
-	/*
-	 * .open
-	 * .read
-	 */
+	.open = gitfs_open,
+	.read = gitfs_read,
+	.release = gitfs_release,
 };
 
 void

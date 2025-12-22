@@ -1,8 +1,12 @@
+#define _GNU_SOURCE
+#include <errno.h>
 #include <git2.h>
 #include <libgen.h>
 #include <limits.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include "inode.h"
 #include "tree.h"
@@ -11,6 +15,8 @@
 
 #define GIT_BRANCH(x)  (is_remote(x) ? \
                         GIT_BRANCH_REMOTE : GIT_BRANCH_LOCAL)
+
+#define GIT_HASH_SZ    GIT_OID_HEXSZ + 1
 
 struct hardcoded_dentry {
 	const char *name;
@@ -36,6 +42,39 @@ static inline int
 is_remote(struct inode *n)
 {
 	return n->parent->type == T_REMOTES;
+}
+
+static size_t
+get_node_size(git_repository *repo, struct inode *node)
+{
+	git_odb *odb = NULL;
+	size_t size = 0;
+	git_otype type;
+	const git_oid *oid;
+
+	if (node->type == T_HASH)
+		return GIT_HASH_SZ;
+
+	if (node->type == T_MSG)
+		return strlen(git_commit_message((git_commit *)node->obj));
+
+	if (node->mode == T_DIR)
+		return 0;
+
+	if (git_repository_odb(&odb, repo)) {
+		fprintf(stderr, "Failed to open ODB\n");
+		return 0;
+	}
+
+	oid = git_object_id(node->obj);
+
+	// Does not load the file into memory
+	if (git_odb_read_header(&size, &type, odb, oid))
+		return 0;
+
+	git_odb_free(odb);
+
+	return size;
 }
 
 static int
@@ -108,6 +147,8 @@ lookup_commit(git_repository *repo, struct inode *dir, const char *entry)
 	default:
 		n->obj = dir->obj;
 	}
+
+	n->size = get_node_size(repo, n);
 
 	return n;
 }
@@ -316,8 +357,50 @@ lookup_tree(git_repository *repo, struct inode *dir, const char *entry)
 	mode = is_dentry_dir(dentry)? T_DIR : T_FILE;
 
 	n = add_tree_node(dir, entry, T_TREE, mode);
+	n->obj = obj;
+	n->size = get_node_size(repo, n);
 
 	return n;
+}
+
+static int
+open_generic(git_repository *repo, struct inode *file)
+{
+	int fd;
+	const char *data;
+
+	fd = memfd_create(file->name, 0);
+	if (fd == -1) {
+		fprintf(stderr, "%s:memfd_create:%s\n",
+		        __func__, strerror(errno));
+		return -1;
+	}
+
+	switch (file->type) {
+	case T_TREE:
+		data = git_blob_rawcontent((git_blob *)file->obj);
+		break;
+	case T_HASH:
+		char sha[GIT_HASH_SZ + 1] = {0};
+		git_oid_tostr(sha, sizeof(sha), git_object_id(file->obj));
+		sha[GIT_HASH_SZ - 1] = '\n';
+		data = sha;
+		break;
+	case T_MSG:
+		data = git_commit_message((git_commit *)file->obj);
+		break;
+	}
+
+	file->size = get_node_size(repo, file);
+
+	if (write(fd, data, file->size) == -1) {
+		close(fd);
+		fprintf(stderr, "%s:write:%s\n",
+			__func__, strerror(errno));
+		return -1;
+	}
+
+	return fd;
 }
 
 static int
@@ -385,9 +468,14 @@ struct inode_ops ops[T_ALL] =
 	{
 		.update = update_tree,
 		.lookup = lookup_tree,
+		.open = open_generic,
 	},
-	{},
-	{},
+	{
+		.open = open_generic,
+	},
+	{
+		.open = open_generic,
+	},
 };
 
 struct inode_ops *
