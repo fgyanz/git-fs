@@ -122,9 +122,7 @@ get_tree_node(unsigned long ino)
 struct inode *
 get_tree_child(struct inode *parent, const char *name)
 {
-	struct inode *c, *s;
-	unsigned long ino;
-	int i;
+	struct inode *c;
 
 	c = parent->child;
 	if (!c)
@@ -175,7 +173,7 @@ tree_path(struct inode *node, char *opath, size_t size, struct inode **tree)
 	int len;
 
 	vstart = v;
-	vend = v + sizeof(v);
+	vend = v + MAX_TREE_DEPTH;
 	*vstart++ = NULL;
 	while (node->parent->type == T_TREE && vstart != vend) {
 		assert(node->ino != ROOT);

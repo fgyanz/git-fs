@@ -1,4 +1,3 @@
-#define _GNU_SOURCE
 #include <errno.h>
 #include <git2.h>
 #include <libgen.h>
@@ -219,13 +218,13 @@ update_remotes(git_repository *repo, struct inode *dir)
 static struct inode *
 lookup_remotes(git_repository *repo, struct inode *dir, const char *entry)
 {
-	struct inode *n;
 	git_remote *r;
 
 	if (git_remote_lookup(&r, repo, entry))
 		return NULL;
 
-       return add_tree_node(dir, entry, T_BRANCHES, T_DIR);
+	git_remote_free(r);
+	return add_tree_node(dir, entry, T_BRANCHES, T_DIR);
 }
 
 static int
@@ -367,7 +366,7 @@ static int
 open_generic(git_repository *repo, struct inode *file)
 {
 	int fd;
-	const char *data;
+	const char *data = NULL;
 
 	fd = memfd_create(file->name, 0);
 	if (fd == -1) {
@@ -380,15 +379,21 @@ open_generic(git_repository *repo, struct inode *file)
 	case T_TREE:
 		data = git_blob_rawcontent((git_blob *)file->obj);
 		break;
-	case T_HASH:
+	case T_HASH: {
 		char sha[GIT_HASH_SZ + 1] = {0};
 		git_oid_tostr(sha, sizeof(sha), git_object_id(file->obj));
 		sha[GIT_HASH_SZ - 1] = '\n';
 		data = sha;
 		break;
+	}
 	case T_MSG:
 		data = git_commit_message((git_commit *)file->obj);
 		break;
+	}
+
+	if (!data) {
+		close(fd);
+		return -1;
 	}
 
 	file->size = get_node_size(repo, file);

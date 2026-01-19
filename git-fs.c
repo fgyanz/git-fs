@@ -62,7 +62,6 @@ static struct gitfs_conf conf;
 struct gitfs_tls *
 get_gitfs_tls(void)
 {
-	int err;
 	struct gitfs_tls *tls;
 
 	if ((tls = pthread_getspecific(gitfs_tls_key)))
