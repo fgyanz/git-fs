@@ -36,5 +36,17 @@ passthrough: install
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/$(BIN)
 
+TESTS = tests/test_tree tests/test_inode
+
+test: $(TESTS)
+	./tests/test_tree
+	./tests/test_inode
+
+tests/test_tree: tests/test_tree.c tree.c inode.c inode.h tree.h
+	$(CC) $(CFLAGS) -o $@ tests/test_tree.c tree.c inode.c $(LIBS)
+
+tests/test_inode: tests/test_inode.c tree.c inode.c inode.h tree.h
+	$(CC) $(CFLAGS) -o $@ tests/test_inode.c tree.c inode.c $(LIBS)
+
 clean:
-	rm -f $(BIN) $(OBJS)
+	rm -f $(BIN) $(OBJS) $(TESTS)
