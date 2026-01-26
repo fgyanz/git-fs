@@ -68,8 +68,10 @@ get_node_size(git_repository *repo, struct inode *node)
 	oid = git_object_id(node->obj);
 
 	// Does not load the file into memory
-	if (git_odb_read_header(&size, &type, odb, oid))
+	if (git_odb_read_header(&size, &type, odb, oid)) {
+		git_odb_free(odb);
 		return 0;
+	}
 
 	git_odb_free(odb);
 
@@ -88,19 +90,24 @@ update_commit(git_repository *repo, struct inode *dir)
 		if (d->parent != T_COMMIT)
 			continue;
 
-		n = add_tree_node(dir, d->name, d->type, d->mode);
 		switch (d->type) {
 		case T_PARENT:
+			// Root commits have no parent
+			if (git_commit_parentcount((git_commit *) dir->obj) == 0)
+				continue;
+			n = add_tree_node(dir, d->name, d->type, d->mode);
 			if (git_commit_parent((git_commit **) &n->obj,
 					      (git_commit *) dir->obj, 0))
 				return 1;
 			break;
 		case T_TREE:
+			n = add_tree_node(dir, d->name, d->type, d->mode);
 			if (git_commit_tree((git_tree **) &n->obj,
 					    (git_commit *) dir->obj))
 				return 1;
 			break;
 		default:
+			n = add_tree_node(dir, d->name, d->type, d->mode);
 			n->obj = dir->obj;
 		}
 	}
@@ -114,15 +121,13 @@ lookup_commit(git_repository *repo, struct inode *dir, const char *entry)
 	int i;
 	struct hardcoded_dentry *d;
 	struct inode *n;
-	size_t l;
 
 	d = NULL;
 	for (i = 0; i < ARRAY_SIZE(dentries); i++) {
 		d = dentries + i;
 		if (d->parent != T_COMMIT)
 			continue;
-		l = strlen(d->name);
-		if (strncmp(d->name, entry, l) == 0)
+		if (strcmp(d->name, entry) == 0)
 			break;
 		d = NULL;
 	}
@@ -189,9 +194,12 @@ lookup_tags(git_repository *repo, struct inode *dir, const char *entry)
 	if (git_reference_lookup(&r, repo, ref_path))
 		return NULL;
 
-	if (git_reference_peel(&obj, r, GIT_OBJECT_COMMIT))
+	if (git_reference_peel(&obj, r, GIT_OBJECT_COMMIT)) {
+		git_reference_free(r);
 		return NULL;
-	
+	}
+
+	git_reference_free(r);
 	n = add_tree_node(dir, entry, T_COMMIT, T_DIR);
 	n->obj = obj;
 
@@ -298,9 +306,12 @@ lookup_branches(git_repository *repo, struct inode *dir, const char *entry)
 	if (git_branch_lookup(&r, repo, br, GIT_BRANCH(dir)))
 		return NULL;
 
-	if (git_reference_peel(&obj, r, GIT_OBJECT_COMMIT))
+	if (git_reference_peel(&obj, r, GIT_OBJECT_COMMIT)) {
+		git_reference_free(r);
 		return NULL;
+	}
 
+	git_reference_free(r);
 	n = add_tree_node(dir, entry, T_COMMIT, T_DIR);
 	n->obj = obj;
 
@@ -367,6 +378,7 @@ open_generic(git_repository *repo, struct inode *file)
 {
 	int fd;
 	const char *data = NULL;
+	char sha[GIT_HASH_SZ + 1] = {0};
 
 	fd = memfd_create(file->name, 0);
 	if (fd == -1) {
@@ -379,13 +391,11 @@ open_generic(git_repository *repo, struct inode *file)
 	case T_TREE:
 		data = git_blob_rawcontent((git_blob *)file->obj);
 		break;
-	case T_HASH: {
-		char sha[GIT_HASH_SZ + 1] = {0};
+	case T_HASH:
 		git_oid_tostr(sha, sizeof(sha), git_object_id(file->obj));
 		sha[GIT_HASH_SZ - 1] = '\n';
 		data = sha;
 		break;
-	}
 	case T_MSG:
 		data = git_commit_message((git_commit *)file->obj);
 		break;

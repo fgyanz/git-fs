@@ -147,8 +147,10 @@ gitfs_lookup(fuse_req_t req, fuse_ino_t parent, const char *name)
 	}
 
 	repo = get_gitfs_repo();
-	if (!repo)
+	if (!repo) {
+		fuse_reply_err(req, EIO);
 		return;
+	}
 
 	n = p->ops->lookup(repo, p, name);
 	if (!n) {
@@ -252,8 +254,10 @@ gitfs_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 	}
 
 	repo = get_gitfs_repo();
-	if (!repo)
+	if (!repo) {
+		fuse_reply_err(req, EIO);
 		return;
+	}
 
 	if (n->ops->update(repo, n)) {
 		fuse_reply_err(req, EIO);
@@ -283,8 +287,10 @@ gitfs_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 	}
 
 	repo = get_gitfs_repo();
-	if (!repo)
+	if (!repo) {
+		fuse_reply_err(req, EIO);
 		return;
+	}
 
 	fd = n->ops->open(repo, n);
 	if (fd == -1) {
