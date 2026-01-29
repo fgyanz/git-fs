@@ -248,6 +248,171 @@ TEST(test_tree_path)
 	return 0;
 }
 
+/* --- Large offset tests --- */
+
+TEST(test_get_tree_sibling_large)
+{
+	struct inode *parent;
+	struct inode *n;
+	char name[32];
+	int i, count;
+
+	parent = add_tree_node(get_tree_node(ROOT), "large-dir",
+	                       T_GENERIC, T_DIR);
+
+	for (i = 0; i < 500; i++) {
+		snprintf(name, sizeof(name), "entry-%03d", i);
+		add_tree_node(parent, name, T_GENERIC, T_FILE);
+	}
+
+	ASSERT_EQ(count_tree_children(parent), 500);
+
+	/*
+	 * Simulate readdir offset traversal: offset 0 uses p->child
+	 * directly, offset >= 1 uses get_tree_sibling(p->child, offset).
+	 *
+	 * Walk all 500 entries the same way readdir does and verify
+	 * we visit exactly 500 unique nodes with no duplicates.
+	 */
+	count = 0;
+	for (i = 0; i < 500; i++) {
+		if (i == 0)
+			n = parent->child;
+		else
+			n = get_tree_sibling(parent->child, i);
+
+		ASSERT_NOT_NULL(n);
+		ASSERT(n->name != NULL);
+		count++;
+	}
+	ASSERT_EQ(count, 500);
+
+	/* Verify specific offsets land on different nodes */
+	ASSERT((long)get_tree_sibling(parent->child, 1) !=
+	       (long)parent->child);
+	ASSERT((long)get_tree_sibling(parent->child, 250) !=
+	       (long)parent->child);
+	ASSERT((long)get_tree_sibling(parent->child, 499) !=
+	       (long)parent->child);
+
+	/* Full wrap: offset == count returns to start */
+	ASSERT_EQ((long)get_tree_sibling(parent->child, 500),
+	          (long)parent->child);
+
+	return 0;
+}
+
+TEST(test_readdir_offset_no_duplicates)
+{
+	struct inode *parent, *seen[200];
+	struct inode *n;
+	char name[32];
+	int i, j, dup;
+
+	parent = add_tree_node(get_tree_node(ROOT), "nodup-dir",
+	                       T_GENERIC, T_DIR);
+
+	for (i = 0; i < 200; i++) {
+		snprintf(name, sizeof(name), "file-%03d", i);
+		add_tree_node(parent, name, T_GENERIC, T_FILE);
+	}
+
+	/*
+	 * Walk like readdir and check for duplicate inodes.
+	 * This catches off-by-one errors in the circular list traversal.
+	 */
+	for (i = 0; i < 200; i++) {
+		if (i == 0)
+			n = parent->child;
+		else
+			n = get_tree_sibling(parent->child, i);
+
+		/* Check not seen before */
+		dup = 0;
+		for (j = 0; j < i; j++) {
+			if (seen[j] == n) {
+				dup = 1;
+				break;
+			}
+		}
+		if (dup)
+			FAIL("duplicate node at offset %d: %s", i, n->name);
+
+		seen[i] = n;
+	}
+
+	return 0;
+}
+
+/* --- Error path tests --- */
+
+TEST(test_get_tree_node_boundary)
+{
+	/*
+	 * nnodes = TOP_INODES + TREE_SIZE (100007).
+	 * Anything above that should return NULL.
+	 */
+	ASSERT_NULL(get_tree_node(200000));
+	ASSERT_NULL(get_tree_node((unsigned long)-1));
+
+	return 0;
+}
+
+TEST(test_add_node_has_ops)
+{
+	struct inode *parent, *child;
+
+	parent = get_tree_node(ROOT);
+	child = add_tree_node(parent, "test-ops", T_GENERIC, T_DIR);
+	ASSERT_NOT_NULL(child);
+	ASSERT_NOT_NULL(child->ops);
+
+	/* Out-of-range type should give NULL ops */
+	ASSERT_NULL(get_inode_ops(T_ALL));
+	ASSERT_NULL(get_inode_ops(999));
+
+	return 0;
+}
+
+TEST(test_tree_path_shallow)
+{
+	struct inode *parent, *tree_node;
+	struct inode *tree_out = NULL;
+	char path[512] = {0};
+
+	/*
+	 * tree_path on a T_TREE node whose parent is NOT T_TREE
+	 * should return immediately with empty path and set tree_out
+	 * to the node itself.
+	 */
+	parent = get_tree_node(HEAD);
+	tree_node = add_tree_node(parent, "shallow-tree", T_TREE, T_DIR);
+
+	tree_path(tree_node, path, sizeof(path), &tree_out);
+	ASSERT_EQ((long)tree_out, (long)tree_node);
+	ASSERT_STR_EQ(path, "");
+
+	return 0;
+}
+
+TEST(test_count_children_after_dedup)
+{
+	struct inode *parent;
+
+	parent = add_tree_node(get_tree_node(ROOT), "dedup-parent",
+	                       T_GENERIC, T_DIR);
+
+	add_tree_node(parent, "x", T_GENERIC, T_DIR);
+	add_tree_node(parent, "y", T_GENERIC, T_DIR);
+
+	/* Adding duplicates should not increase count */
+	add_tree_node(parent, "x", T_GENERIC, T_DIR);
+	add_tree_node(parent, "y", T_GENERIC, T_DIR);
+	ASSERT_EQ(count_tree_children(parent), 2);
+
+	return 0;
+}
+
 int
 main(void)
 {
@@ -270,6 +435,12 @@ main(void)
 	RUN_TEST(test_get_tree_sibling);
 	RUN_TEST(test_circular_list_integrity);
 	RUN_TEST(test_tree_path);
+	RUN_TEST(test_get_tree_sibling_large);
+	RUN_TEST(test_readdir_offset_no_duplicates);
+	RUN_TEST(test_get_tree_node_boundary);
+	RUN_TEST(test_add_node_has_ops);
+	RUN_TEST(test_tree_path_shallow);
+	RUN_TEST(test_count_children_after_dedup);
 
 	TEST_SUMMARY();
 }

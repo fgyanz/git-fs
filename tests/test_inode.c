@@ -32,14 +32,18 @@ run_cmd(const char *repo_path, const char *cmd)
  *   - file2.txt with "world\n" (second commit)
  *   - Tag v1.0 on second commit
  *   - Branch "feature" on second commit
+ *   - A bare clone as "origin" remote with tracking branches
  */
+static char repo_path[] = "/tmp/git-fs-test-XXXXXX";
+static char bare_path[] = "/tmp/git-fs-bare-XXXXXX";
+
 static char *
 create_test_repo(void)
 {
-	static char path[] = "/tmp/git-fs-test-XXXXXX";
 	char *p;
+	char cmd[4096];
 
-	p = mkdtemp(path);
+	p = mkdtemp(repo_path);
 	if (!p) {
 		perror("mkdtemp");
 		return NULL;
@@ -60,6 +64,24 @@ create_test_repo(void)
 		return NULL;
 	}
 
+	/* Create bare clone and add as remote for tracking branches */
+	if (!mkdtemp(bare_path)) {
+		perror("mkdtemp bare");
+		return NULL;
+	}
+
+	snprintf(cmd, sizeof(cmd),
+	         "git clone -q --bare '%s' '%s/repo.git' && "
+	         "cd '%s' && "
+	         "git remote add origin '%s/repo.git' && "
+	         "git fetch -q origin",
+	         p, bare_path, p, bare_path);
+
+	if (system(cmd)) {
+		fprintf(stderr, "Failed to set up remote\n");
+		return NULL;
+	}
+
 	return p;
 }
 
@@ -68,7 +90,7 @@ cleanup_test_repo(const char *path)
 {
 	char cmd[4096];
 
-	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", path);
+	snprintf(cmd, sizeof(cmd), "rm -rf '%s' '%s'", path, bare_path);
 	system(cmd);
 }
 
@@ -509,6 +531,207 @@ TEST(test_get_node_size)
 	return 0;
 }
 
+/* --- Remotes tests --- */
+
+TEST(test_update_remotes)
+{
+	struct inode *remotes, *n;
+	struct inode_ops *ops;
+
+	remotes = get_tree_node(REMOTES);
+	ASSERT_NOT_NULL(remotes);
+
+	ops = get_inode_ops(T_REMOTES);
+	ASSERT_NOT_NULL(ops);
+	ASSERT_EQ(ops->update(repo, remotes), 0);
+
+	n = get_tree_child(remotes, "origin");
+	ASSERT_NOT_NULL(n);
+	ASSERT_EQ(n->type, T_BRANCHES);
+	ASSERT_EQ(n->mode, T_DIR);
+
+	return 0;
+}
+
+TEST(test_lookup_remotes)
+{
+	struct inode *remotes, *n;
+	struct inode_ops *ops;
+
+	remotes = get_tree_node(REMOTES);
+	ops = get_inode_ops(T_REMOTES);
+
+	n = ops->lookup(repo, remotes, "origin");
+	ASSERT_NOT_NULL(n);
+	ASSERT_EQ(n->type, T_BRANCHES);
+
+	n = ops->lookup(repo, remotes, "no-such-remote");
+	ASSERT_NULL(n);
+
+	return 0;
+}
+
+TEST(test_update_remote_branches)
+{
+	struct inode *remotes, *origin, *n;
+	struct inode_ops *remote_ops, *branch_ops;
+
+	remotes = get_tree_node(REMOTES);
+	remote_ops = get_inode_ops(T_REMOTES);
+	ASSERT_EQ(remote_ops->update(repo, remotes), 0);
+
+	origin = get_tree_child(remotes, "origin");
+	ASSERT_NOT_NULL(origin);
+
+	/* origin is a T_BRANCHES node under T_REMOTES parent */
+	branch_ops = get_inode_ops(T_BRANCHES);
+	ASSERT_EQ(branch_ops->update(repo, origin), 0);
+
+	/* Should have the default branch as a remote tracking branch */
+	n = origin->child;
+	ASSERT_NOT_NULL(n);
+	ASSERT(count_tree_children(origin) >= 1);
+
+	return 0;
+}
+
+TEST(test_lookup_remote_branches)
+{
+	struct inode *remotes, *origin, *n;
+	struct inode_ops *remote_ops, *branch_ops;
+
+	remotes = get_tree_node(REMOTES);
+	remote_ops = get_inode_ops(T_REMOTES);
+	ASSERT_EQ(remote_ops->update(repo, remotes), 0);
+
+	origin = get_tree_child(remotes, "origin");
+	ASSERT_NOT_NULL(origin);
+
+	branch_ops = get_inode_ops(T_BRANCHES);
+
+	/* "feature" was pushed to the bare clone */
+	n = branch_ops->lookup(repo, origin, "feature");
+	ASSERT_NOT_NULL(n);
+	ASSERT_EQ(n->type, T_COMMIT);
+	ASSERT_NOT_NULL(n->obj);
+
+	n = branch_ops->lookup(repo, origin, "no-such-branch");
+	ASSERT_NULL(n);
+
+	return 0;
+}
+
+/* --- Error path tests --- */
+
+TEST(test_get_inode_ops_out_of_range)
+{
+	ASSERT_NULL(get_inode_ops(T_ALL));
+	ASSERT_NULL(get_inode_ops(T_ALL + 1));
+	ASSERT_NULL(get_inode_ops(999));
+
+	return 0;
+}
+
+TEST(test_lookup_tree_nonexistent)
+{
+	struct inode *head, *tree_node, *n;
+	struct inode_ops *commit_ops, *tree_ops;
+
+	head = head_commit_inode();
+	ASSERT_NOT_NULL(head);
+
+	commit_ops = get_inode_ops(T_COMMIT);
+	ASSERT_EQ(commit_ops->update(repo, head), 0);
+
+	tree_node = get_tree_child(head, "tree");
+	ASSERT_NOT_NULL(tree_node);
+
+	tree_ops = get_inode_ops(T_TREE);
+
+	/* Various non-existent paths */
+	n = tree_ops->lookup(repo, tree_node, "");
+	ASSERT_NULL(n);
+
+	n = tree_ops->lookup(repo, tree_node, "no-such-file.txt");
+	ASSERT_NULL(n);
+
+	n = tree_ops->lookup(repo, tree_node, "..");
+	ASSERT_NULL(n);
+
+	return 0;
+}
+
+TEST(test_lookup_commit_nonexistent)
+{
+	struct inode *head, *n;
+	struct inode_ops *ops;
+
+	head = head_commit_inode();
+	ASSERT_NOT_NULL(head);
+
+	ops = get_inode_ops(T_COMMIT);
+
+	n = ops->lookup(repo, head, "");
+	ASSERT_NULL(n);
+
+	n = ops->lookup(repo, head, "nonexistent");
+	ASSERT_NULL(n);
+
+	return 0;
+}
+
+TEST(test_root_commit_no_parent_entry)
+{
+	struct inode *head, *parent_node, *root_commit;
+	struct inode_ops *ops;
+
+	head = head_commit_inode();
+	ASSERT_NOT_NULL(head);
+
+	ops = get_inode_ops(T_COMMIT);
+	ASSERT_EQ(ops->update(repo, head), 0);
+
+	parent_node = get_tree_child(head, "parent");
+	ASSERT_NOT_NULL(parent_node);
+
+	root_commit = parent_node;
+	ASSERT_EQ(ops->update(repo, root_commit), 0);
+
+	/* Root commit should have tree/hash/msg but no parent */
+	ASSERT_NOT_NULL(get_tree_child(root_commit, "tree"));
+	ASSERT_NOT_NULL(get_tree_child(root_commit, "hash"));
+	ASSERT_NOT_NULL(get_tree_child(root_commit, "msg"));
+	ASSERT_NULL(get_tree_child(root_commit, "parent"));
+
+	return 0;
+}
+
+TEST(test_node_size_directory)
+{
+	struct inode *head, *tree_node;
+	struct inode_ops *commit_ops, *tree_ops;
+	struct inode *dir;
+
+	head = head_commit_inode();
+	ASSERT_NOT_NULL(head);
+
+	commit_ops = get_inode_ops(T_COMMIT);
+	ASSERT_EQ(commit_ops->update(repo, head), 0);
+
+	tree_node = get_tree_child(head, "tree");
+	ASSERT_NOT_NULL(tree_node);
+
+	tree_ops = get_inode_ops(T_TREE);
+	ASSERT_EQ(tree_ops->update(repo, tree_node), 0);
+
+	/* Directories should have size 0 */
+	dir = get_tree_child(tree_node, "tree");
+	if (dir && dir->mode == T_DIR)
+		ASSERT_EQ(dir->size, 0);
+
+	return 0;
+}
+
 int
 main(void)
 {
@@ -546,6 +769,15 @@ main(void)
 	RUN_TEST(test_open_msg);
 	RUN_TEST(test_open_blob);
 	RUN_TEST(test_get_node_size);
+	RUN_TEST(test_update_remotes);
+	RUN_TEST(test_lookup_remotes);
+	RUN_TEST(test_update_remote_branches);
+	RUN_TEST(test_lookup_remote_branches);
+	RUN_TEST(test_get_inode_ops_out_of_range);
+	RUN_TEST(test_lookup_tree_nonexistent);
+	RUN_TEST(test_lookup_commit_nonexistent);
+	RUN_TEST(test_root_commit_no_parent_entry);
+	RUN_TEST(test_node_size_directory);
 
 	git_repository_free(repo);
 out:

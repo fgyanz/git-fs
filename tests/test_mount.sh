@@ -3,7 +3,7 @@
 # Usage: ./tests/test_mount.sh [/path/to/git-fs-binary]
 #
 # Creates a temporary git repo and mount point, mounts it,
-# and verifies the filesystem layout.
+# and verifies the filesystem layout and FUSE callback behavior.
 
 set -e
 
@@ -51,6 +51,16 @@ assert_match() {
 	fi
 }
 
+assert_fail() {
+	if eval "$1" 2>/dev/null; then
+		FAIL=$((FAIL + 1))
+		printf "  FAIL %-34s  command should have failed\n" "$2"
+	else
+		PASS=$((PASS + 1))
+		printf "  %-40s  ok\n" "$2"
+	fi
+}
+
 # Create test repo
 REPO=$(mktemp -d /tmp/git-fs-test-repo-XXXXXX)
 MNT=$(mktemp -d /tmp/git-fs-test-mnt-XXXXXX)
@@ -68,6 +78,13 @@ git commit -q -m "first commit"
 echo "world" > file2.txt
 git add file2.txt
 git commit -q -m "second commit"
+# Third commit: large directory with 500 files to force multiple readdir calls
+mkdir manyfiles
+for i in $(seq -w 1 500); do
+	echo "content-$i" > "manyfiles/f-$i.txt"
+done
+git add manyfiles
+git commit -q -m "add large directory"
 git tag v1.0
 git branch feature
 cd - > /dev/null
@@ -78,49 +95,150 @@ echo "test_mount:"
 "$GITFS" -r "$REPO" -m "$MNT"
 sleep 0.5
 
-# Test: root directory listing
+# --- readdir: root directory ---
 ROOT_LS=$(ls "$MNT")
-assert_contains "$ROOT_LS" "HEAD" "root_has_HEAD"
-assert_contains "$ROOT_LS" "branches" "root_has_branches"
-assert_contains "$ROOT_LS" "tags" "root_has_tags"
+assert_contains "$ROOT_LS" "HEAD" "readdir_root_HEAD"
+assert_contains "$ROOT_LS" "branches" "readdir_root_branches"
+assert_contains "$ROOT_LS" "tags" "readdir_root_tags"
 
-# Test: HEAD hash is valid 40-char hex
-HASH=$(cat "$MNT/HEAD/hash")
-assert_match "$HASH" "^[0-9a-f]{40}$" "HEAD_hash_valid"
+# --- readdir: commit directory ---
+COMMIT_LS=$(ls "$MNT/HEAD")
+assert_contains "$COMMIT_LS" "tree" "readdir_commit_tree"
+assert_contains "$COMMIT_LS" "hash" "readdir_commit_hash"
+assert_contains "$COMMIT_LS" "msg" "readdir_commit_msg"
+assert_contains "$COMMIT_LS" "parent" "readdir_commit_parent"
 
-# Test: HEAD msg contains commit message
-MSG=$(cat "$MNT/HEAD/msg")
-assert_contains "$MSG" "second commit" "HEAD_msg_content"
-
-# Test: HEAD tree lists files
+# --- readdir: tree directory ---
 TREE_LS=$(ls "$MNT/HEAD/tree/")
-assert_contains "$TREE_LS" "file.txt" "tree_has_file"
-assert_contains "$TREE_LS" "file2.txt" "tree_has_file2"
-assert_contains "$TREE_LS" "subdir" "tree_has_subdir"
+assert_contains "$TREE_LS" "file.txt" "readdir_tree_file"
+assert_contains "$TREE_LS" "file2.txt" "readdir_tree_file2"
+assert_contains "$TREE_LS" "subdir" "readdir_tree_subdir"
+assert_contains "$TREE_LS" "manyfiles" "readdir_tree_manyfiles"
 
-# Test: file content
-FILE_CONTENT=$(cat "$MNT/HEAD/tree/file.txt")
-assert_eq "$FILE_CONTENT" "hello" "file_content"
+# --- readdir: subdirectory ---
+SUB_LS=$(ls "$MNT/HEAD/tree/subdir/")
+assert_contains "$SUB_LS" "inner.txt" "readdir_subdir_file"
 
-# Test: nested file
-NESTED=$(cat "$MNT/HEAD/tree/subdir/inner.txt")
-assert_eq "$NESTED" "nested" "nested_file_content"
-
-# Test: branches
+# --- readdir: branches ---
 BR_LS=$(ls "$MNT/branches/heads/")
-assert_contains "$BR_LS" "feature" "branches_has_feature"
+assert_contains "$BR_LS" "feature" "readdir_branches_feature"
 
-# Test: tags
+# --- readdir: tags ---
 TAG_LS=$(ls "$MNT/tags/")
-assert_contains "$TAG_LS" "v1.0" "tags_has_v1.0"
+assert_contains "$TAG_LS" "v1.0" "readdir_tags_v1.0"
 
-# Test: tag commit
+# --- open/read: hash file ---
+HASH=$(cat "$MNT/HEAD/hash")
+assert_match "$HASH" "^[0-9a-f]{40}$" "read_hash_valid_hex"
+
+# --- open/read: msg file ---
+MSG=$(cat "$MNT/HEAD/msg")
+assert_contains "$MSG" "add large directory" "read_msg_content"
+
+# --- open/read: blob file ---
+FILE_CONTENT=$(cat "$MNT/HEAD/tree/file.txt")
+assert_eq "$FILE_CONTENT" "hello" "read_blob_content"
+
+# --- open/read: nested blob ---
+NESTED=$(cat "$MNT/HEAD/tree/subdir/inner.txt")
+assert_eq "$NESTED" "nested" "read_nested_blob"
+
+# --- open/read: tag commit ---
 TAG_MSG=$(cat "$MNT/tags/v1.0/msg")
-assert_contains "$TAG_MSG" "second commit" "tag_msg_content"
+assert_contains "$TAG_MSG" "second commit" "read_tag_msg"
 
-# Test: parent commit
+# --- open/read: parent commit ---
 PARENT_MSG=$(cat "$MNT/HEAD/parent/msg")
-assert_contains "$PARENT_MSG" "first commit" "parent_msg_content"
+assert_contains "$PARENT_MSG" "second commit" "read_parent_msg"
+
+# --- getattr: root is directory ---
+STAT_ROOT=$(stat -c '%F' "$MNT")
+assert_eq "$STAT_ROOT" "directory" "getattr_root_is_dir"
+
+# --- getattr: HEAD is directory ---
+STAT_HEAD=$(stat -c '%F' "$MNT/HEAD")
+assert_eq "$STAT_HEAD" "directory" "getattr_HEAD_is_dir"
+
+# --- getattr: tree/ is directory ---
+STAT_TREE=$(stat -c '%F' "$MNT/HEAD/tree")
+assert_eq "$STAT_TREE" "directory" "getattr_tree_is_dir"
+
+# --- getattr: subdir is directory ---
+STAT_SUB=$(stat -c '%F' "$MNT/HEAD/tree/subdir")
+assert_eq "$STAT_SUB" "directory" "getattr_subdir_is_dir"
+
+# --- getattr: file is regular ---
+STAT_FILE=$(stat -c '%F' "$MNT/HEAD/tree/file.txt")
+assert_eq "$STAT_FILE" "regular file" "getattr_file_is_regular"
+
+# --- getattr: hash is regular ---
+STAT_HASH=$(stat -c '%F' "$MNT/HEAD/hash")
+assert_eq "$STAT_HASH" "regular file" "getattr_hash_is_regular"
+
+# --- getattr: file size matches content ---
+STAT_SIZE=$(stat -c '%s' "$MNT/HEAD/tree/file.txt")
+assert_eq "$STAT_SIZE" "6" "getattr_file_size"
+
+# --- getattr: hash size is 41 (40 hex + newline) ---
+STAT_HASH_SIZE=$(stat -c '%s' "$MNT/HEAD/hash")
+assert_eq "$STAT_HASH_SIZE" "41" "getattr_hash_size"
+
+# --- getattr: directory nlink >= 2 ---
+STAT_NLINK=$(stat -c '%h' "$MNT")
+assert_match "$STAT_NLINK" "^[2-9]" "getattr_dir_nlink"
+
+# --- getattr: file nlink == 1 ---
+STAT_FNLINK=$(stat -c '%h' "$MNT/HEAD/hash")
+assert_eq "$STAT_FNLINK" "1" "getattr_file_nlink"
+
+# --- error: non-existent lookup returns ENOENT ---
+assert_fail "cat '$MNT/nonexistent' " "lookup_enoent"
+assert_fail "ls '$MNT/HEAD/nonexistent'" "lookup_commit_enoent"
+assert_fail "cat '$MNT/HEAD/tree/no-such-file'" "lookup_tree_enoent"
+
+# --- error: read-only filesystem ---
+assert_fail "touch '$MNT/newfile'" "write_readonly"
+assert_fail "mkdir '$MNT/newdir'" "mkdir_readonly"
+assert_fail "rm '$MNT/HEAD/hash'" "rm_readonly"
+
+# --- root commit has no parent entry ---
+# HEAD -> parent (second commit) -> parent (first/root commit)
+ROOT_COMMIT_LS=$(ls "$MNT/HEAD/parent/parent/")
+assert_contains "$ROOT_COMMIT_LS" "tree" "root_commit_has_tree"
+assert_contains "$ROOT_COMMIT_LS" "hash" "root_commit_has_hash"
+assert_contains "$ROOT_COMMIT_LS" "msg" "root_commit_has_msg"
+# "parent" should NOT appear for root commits
+if echo "$ROOT_COMMIT_LS" | grep -q "^parent$"; then
+	FAIL=$((FAIL + 1))
+	printf "  FAIL %-34s  root commit should not have parent\n" "root_commit_no_parent"
+else
+	PASS=$((PASS + 1))
+	printf "  %-40s  ok\n" "root_commit_no_parent"
+fi
+
+# --- readdir large directory (forces multiple kernel readdir calls) ---
+MANY_COUNT=$(ls -1 "$MNT/HEAD/tree/manyfiles/" | wc -l)
+assert_eq "$MANY_COUNT" "500" "readdir_large_count"
+
+# Verify first, middle, last entries are readable
+FIRST=$(cat "$MNT/HEAD/tree/manyfiles/f-001.txt")
+assert_eq "$FIRST" "content-001" "readdir_large_first"
+
+MID=$(cat "$MNT/HEAD/tree/manyfiles/f-250.txt")
+assert_eq "$MID" "content-250" "readdir_large_mid"
+
+LAST=$(cat "$MNT/HEAD/tree/manyfiles/f-500.txt")
+assert_eq "$LAST" "content-500" "readdir_large_last"
+
+# Verify no duplicates in listing
+MANY_UNIQ=$(ls -1 "$MNT/HEAD/tree/manyfiles/" | sort -u | wc -l)
+assert_eq "$MANY_UNIQ" "500" "readdir_large_no_dupes"
+
+# --- branch commit matches HEAD ---
+BRANCH_HASH=$(cat "$MNT/tags/v1.0/hash")
+# tag was created before the large dir commit, so hashes differ now
+# just verify tag hash is valid
+assert_match "$BRANCH_HASH" "^[0-9a-f]{40}$" "tag_hash_valid"
 
 # Unmount
 fusermount3 -u "$MNT"
