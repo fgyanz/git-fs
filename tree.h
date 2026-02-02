@@ -9,4 +9,8 @@ extern struct inode *add_tree_node(struct inode *, const char *,
                                    unsigned, mode_t);
 extern size_t count_tree_children(struct inode *);
 extern void tree_path(struct inode *, char *, size_t, struct inode **);
+extern void tree_ref(struct inode *);
+extern void tree_forget(struct inode *, unsigned long);
+extern void free_retired(struct inode *);
+extern void tree_destroy(void);
 #endif
