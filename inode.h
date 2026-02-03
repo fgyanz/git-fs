@@ -7,6 +7,10 @@
 #define T_FILE          S_IFREG
 #define nlink(x)        ((x) == T_DIR ? 2 : 1)
 
+#define INODE_STATIC   (1u << 0)
+#define INODE_DELETED  (1u << 1)
+#define INODE_DETACHED (1u << 2)
+
 // static inodes
 enum {
 	ROOT = 1,
@@ -47,6 +51,8 @@ struct inode {
 	mode_t mode;
 	unsigned type;
 	unsigned long ino;
+	unsigned flags;
+	unsigned long nlookup;
 	size_t size;
 	union {
 		struct inode *parent;
@@ -55,11 +61,21 @@ struct inode {
 	struct inode *sibling;
 	struct inode *child;
 	struct inode *next_free;
+	struct inode *retired;
 	struct inode_ops *ops;
 	struct git_object *obj;
 	int backing_id;
 };
 
 extern struct inode_ops *get_inode_ops(unsigned);
+
+#define aload(p)       __atomic_load_n(p, __ATOMIC_ACQUIRE)
+#define astore(p, v)   __atomic_store_n(p, v, __ATOMIC_RELEASE)
+#define axchg(p, v)    __atomic_exchange_n(p, v, __ATOMIC_ACQ_REL)
+#define acas(p, e, d)  __atomic_compare_exchange_n(p, e, d, 1, \
+                           __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)
+#define afadd(p, v)    __atomic_fetch_add(p, v, __ATOMIC_ACQ_REL)
+#define afsub(p, v)    __atomic_fetch_sub(p, v, __ATOMIC_ACQ_REL)
+#define afor(p, v)     __atomic_fetch_or(p, v, __ATOMIC_RELEASE)
 
 #endif

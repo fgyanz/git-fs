@@ -12,6 +12,16 @@
 
 #define ARRAY_SIZE(x)  (sizeof(x) / sizeof(x[0]))
 
+static inline void
+set_obj(struct inode *n, struct git_object *obj)
+{
+	struct git_object *old;
+
+	old = axchg(&n->obj, obj);
+	if (old && old != obj)
+		git_object_free(old);
+}
+
 #define GIT_BRANCH(x)  (is_remote(x) ? \
                         GIT_BRANCH_REMOTE : GIT_BRANCH_LOCAL)
 
@@ -79,6 +89,31 @@ get_node_size(git_repository *repo, struct inode *node)
 }
 
 static int
+resolve_commit(struct inode *n, struct inode *dir, unsigned type)
+{
+	git_commit *c;
+	git_tree *t;
+	git_object *dup;
+
+	switch (type) {
+	case T_PARENT:
+		if (git_commit_parent(&c, (git_commit *) dir->obj, 0))
+			return 1;
+		set_obj(n, (git_object *) c);
+		break;
+	case T_TREE:
+		if (git_commit_tree(&t, (git_commit *) dir->obj))
+			return 1;
+		set_obj(n, (git_object *) t);
+		break;
+	default:
+		git_object_dup(&dup, dir->obj);
+		set_obj(n, dup);
+	}
+	return 0;
+}
+
+static int
 update_commit(git_repository *repo, struct inode *dir)
 {
 	int i;
@@ -90,26 +125,16 @@ update_commit(git_repository *repo, struct inode *dir)
 		if (d->parent != T_COMMIT)
 			continue;
 
-		switch (d->type) {
-		case T_PARENT:
-			// Root commits have no parent
-			if (git_commit_parentcount((git_commit *) dir->obj) == 0)
-				continue;
-			n = add_tree_node(dir, d->name, d->type, d->mode);
-			if (git_commit_parent((git_commit **) &n->obj,
-					      (git_commit *) dir->obj, 0))
-				return 1;
-			break;
-		case T_TREE:
-			n = add_tree_node(dir, d->name, d->type, d->mode);
-			if (git_commit_tree((git_tree **) &n->obj,
-					    (git_commit *) dir->obj))
-				return 1;
-			break;
-		default:
-			n = add_tree_node(dir, d->name, d->type, d->mode);
-			n->obj = dir->obj;
-		}
+		// Root commits have no parent
+		if (d->type == T_PARENT &&
+		    git_commit_parentcount((git_commit *) dir->obj) == 0)
+			continue;
+
+		n = add_tree_node(dir, d->name, d->type, d->mode);
+		if (!n)
+			return 1;
+		if (resolve_commit(n, dir, d->type))
+			return 1;
 	}
 
 	return 0;
@@ -136,21 +161,10 @@ lookup_commit(git_repository *repo, struct inode *dir, const char *entry)
 		return NULL;
 
 	n = add_tree_node(dir, d->name, d->type, d->mode);
-
-	switch (d->type) {
-	case T_PARENT:
-		if (git_commit_parent((git_commit **) &n->obj,
-		                      (git_commit *) dir->obj, 0))
-			return NULL;
-		break;
-	case T_TREE:
-		if (git_commit_tree((git_tree **) &n->obj,
-		                    (git_commit *) dir->obj))
-			return NULL;
-		break;
-	default:
-		n->obj = dir->obj;
-	}
+	if (!n)
+		return NULL;
+	if (resolve_commit(n, dir, d->type))
+		return NULL;
 
 	n->size = get_node_size(repo, n);
 
@@ -174,7 +188,8 @@ update_tags(git_repository *repo, struct inode *dir)
 			continue;
 		tag = (char *) git_reference_name(r);
 		n = add_tree_node(dir, basename(tag), T_COMMIT, T_DIR);
-		n->obj = obj;
+		if (n)
+			set_obj(n, obj);
 	}
 
 	git_reference_iterator_free(it);
@@ -201,7 +216,9 @@ lookup_tags(git_repository *repo, struct inode *dir, const char *entry)
 
 	git_reference_free(r);
 	n = add_tree_node(dir, entry, T_COMMIT, T_DIR);
-	n->obj = obj;
+	if (!n)
+		return NULL;
+	set_obj(n, obj);
 
 	return n;
 }
@@ -278,7 +295,8 @@ update_branches(git_repository *repo, struct inode *dir)
 			continue;
 
 		n = add_tree_node(dir, br, T_COMMIT, T_DIR);
-		n->obj = obj;
+		if (n)
+			set_obj(n, obj);
 	}
 
 	git_reference_free(r);
@@ -313,7 +331,9 @@ lookup_branches(git_repository *repo, struct inode *dir, const char *entry)
 
 	git_reference_free(r);
 	n = add_tree_node(dir, entry, T_COMMIT, T_DIR);
-	n->obj = obj;
+	if (!n)
+		return NULL;
+	set_obj(n, obj);
 
 	return n;
 }
@@ -339,7 +359,8 @@ update_tree(git_repository *repo, struct inode *dir)
 		    continue;
 		
 		n = add_tree_node(dir, name, T_TREE, mode);
-		n->obj = obj;
+		if (n)
+			set_obj(n, obj);
 	}
 
 	return 0;
@@ -361,13 +382,18 @@ lookup_tree(git_repository *repo, struct inode *dir, const char *entry)
 	if (git_tree_entry_bypath(&dentry, (git_tree *)t->obj, path + 1))
 		return NULL;
 
-	if (git_tree_entry_to_object(&obj, repo, dentry))
+	if (git_tree_entry_to_object(&obj, repo, dentry)) {
+		git_tree_entry_free(dentry);
 		return NULL;
+	}
 
 	mode = is_dentry_dir(dentry)? T_DIR : T_FILE;
+	git_tree_entry_free(dentry);
 
 	n = add_tree_node(dir, entry, T_TREE, mode);
-	n->obj = obj;
+	if (!n)
+		return NULL;
+	set_obj(n, obj);
 	n->size = get_node_size(repo, n);
 
 	return n;
@@ -421,13 +447,18 @@ open_generic(git_repository *repo, struct inode *file)
 static int
 update_head(git_repository *repo, struct inode *n)
 {
-	git_object *obj;
+	git_object *obj, *commit;
 
 	if (git_revparse_single(&obj, repo, "HEAD"))
 		return 1;
 
-	if (git_object_peel(&n->obj, obj, GIT_OBJECT_COMMIT))
+	if (git_object_peel(&commit, obj, GIT_OBJECT_COMMIT)) {
+		git_object_free(obj);
 		return 1;
+	}
+
+	git_object_free(obj);
+	set_obj(n, commit);
 
 	return 0;
 }
