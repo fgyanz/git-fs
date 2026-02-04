@@ -128,6 +128,7 @@ gitfs_init(void *priv, struct fuse_conn_info *conn)
 static void
 gitfs_destroy(void *priv)
 {
+	tree_destroy();
 	git_libgit2_shutdown();
 }
 
@@ -157,6 +158,8 @@ gitfs_lookup(fuse_req_t req, fuse_ino_t parent, const char *name)
 		fuse_reply_err(req, ENOENT);
 		return;
 	}
+
+	tree_ref(n);
 
 	e.ino = n->ino;
 	e.attr.st_mode = n->mode | GITFS_PERM;
@@ -225,7 +228,13 @@ gitfs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size,
 			break;
 		default:
 			s = i - DIR_DEFAULTS;
-			n = s ? get_tree_sibling(p->child, s) : p->child;
+			n = s ? get_tree_sibling(aload(&p->child), s)
+			      : aload(&p->child);
+			if (!n || !n->name) {
+				i = ndirs;
+				sz = 0;
+				continue;
+			}
 			name = n->name;
 		}
 		st.st_ino = n->ino;
@@ -239,6 +248,34 @@ gitfs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size,
 
 	fuse_reply_buf(req, buf, size - bsz);
 	free(buf);
+}
+
+static void
+gitfs_forget(fuse_req_t req, fuse_ino_t ino, uint64_t nlookup)
+{
+	struct inode *n;
+
+	n = get_tree_node(ino);
+	if (n)
+		tree_forget(n, nlookup);
+
+	fuse_reply_none(req);
+}
+
+static void
+gitfs_forget_multi(fuse_req_t req, size_t count,
+                   struct fuse_forget_data *forgets)
+{
+	size_t i;
+	struct inode *n;
+
+	for (i = 0; i < count; i++) {
+		n = get_tree_node(forgets[i].ino);
+		if (n)
+			tree_forget(n, forgets[i].nlookup);
+	}
+
+	fuse_reply_none(req);
 }
 
 static void
@@ -259,10 +296,24 @@ gitfs_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 		return;
 	}
 
+	if (!n->ops->update)
+		goto out;
+
+	/* free old children, swap current list out, rebuild from git.
+	 * skip T_GENERIC dirs (ROOT, BRANCHES) whose children are static. */
+	if (n->type != T_GENERIC) {
+		free_retired(axchg(&n->retired, NULL));
+		astore(&n->retired, axchg(&n->child, NULL));
+	}
+
 	if (n->ops->update(repo, n)) {
+		if (n->type != T_GENERIC)
+			astore(&n->child, axchg(&n->retired, NULL));
 		fuse_reply_err(req, EIO);
 		return;
 	}
+
+out:
 
 	fuse_reply_open(req, fi);
 }
@@ -347,6 +398,8 @@ static const struct fuse_lowlevel_ops ops = {
 	.init = gitfs_init,
 	.destroy = gitfs_destroy,
 	.lookup = gitfs_lookup,
+	.forget = gitfs_forget,
+	.forget_multi = gitfs_forget_multi,
 	.readdir = gitfs_readdir,
 	.releasedir = gitfs_releasedir,
 	.opendir = gitfs_opendir,
