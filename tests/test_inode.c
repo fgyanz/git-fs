@@ -101,7 +101,7 @@ static struct inode *
 head_commit_inode(void)
 {
 	struct inode *n;
-	git_object *obj;
+	git_object *obj, *commit;
 
 	n = get_tree_node(HEAD);
 	if (!n)
@@ -110,8 +110,13 @@ head_commit_inode(void)
 	if (git_revparse_single(&obj, repo, "HEAD"))
 		return NULL;
 
-	if (git_object_peel(&n->obj, obj, GIT_OBJECT_COMMIT))
+	if (git_object_peel(&commit, obj, GIT_OBJECT_COMMIT)) {
+		git_object_free(obj);
 		return NULL;
+	}
+
+	git_object_free(obj);
+	n->obj = commit;
 
 	return n;
 }
@@ -706,6 +711,56 @@ TEST(test_root_commit_no_parent_entry)
 	return 0;
 }
 
+TEST(test_update_generic)
+{
+	struct inode *root, *head;
+	struct inode_ops *ops;
+
+	root = get_tree_node(ROOT);
+	ASSERT_NOT_NULL(root);
+
+	ops = get_inode_ops(T_GENERIC);
+	ASSERT_NOT_NULL(ops);
+	ASSERT_EQ(ops->update(repo, root), 0);
+
+	/* update_generic on ROOT should populate HEAD's obj */
+	head = get_tree_node(HEAD);
+	ASSERT_NOT_NULL(head);
+	ASSERT_NOT_NULL(head->obj);
+
+	return 0;
+}
+
+TEST(test_lookup_generic)
+{
+	struct inode *root, *n;
+	struct inode_ops *ops;
+
+	root = get_tree_node(ROOT);
+	ops = get_inode_ops(T_GENERIC);
+
+	/* should find static children */
+	n = ops->lookup(repo, root, "branches");
+	ASSERT_NOT_NULL(n);
+	ASSERT_EQ(n->ino, BRANCHES);
+
+	n = ops->lookup(repo, root, "tags");
+	ASSERT_NOT_NULL(n);
+	ASSERT_EQ(n->ino, TAGS);
+
+	/* HEAD lookup should also populate its obj */
+	n = ops->lookup(repo, root, "HEAD");
+	ASSERT_NOT_NULL(n);
+	ASSERT_EQ(n->ino, HEAD);
+	ASSERT_NOT_NULL(n->obj);
+
+	/* non-existent */
+	n = ops->lookup(repo, root, "nope");
+	ASSERT_NULL(n);
+
+	return 0;
+}
+
 TEST(test_node_size_directory)
 {
 	struct inode *head, *tree_node;
@@ -778,6 +833,8 @@ main(void)
 	RUN_TEST(test_lookup_commit_nonexistent);
 	RUN_TEST(test_root_commit_no_parent_entry);
 	RUN_TEST(test_node_size_directory);
+	RUN_TEST(test_update_generic);
+	RUN_TEST(test_lookup_generic);
 
 	git_repository_free(repo);
 out:

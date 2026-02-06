@@ -537,6 +537,55 @@ TEST(test_deleted_in_sibling_walk)
 	return 0;
 }
 
+TEST(test_rebuild_restore_on_failure)
+{
+	struct inode *parent, *c;
+
+	parent = add_tree_node(get_tree_node(ROOT), "restore-parent",
+	                       T_GENERIC, T_DIR);
+	add_tree_node(parent, "keep-me", T_GENERIC, T_FILE);
+
+	ASSERT_EQ(count_tree_children(parent), 1);
+
+	/* swap out child list like opendir does */
+	astore(&parent->retired, axchg(&parent->child, NULL));
+	ASSERT_EQ(count_tree_children(parent), 0);
+
+	/* simulate update failure: restore from retired */
+	astore(&parent->child, axchg(&parent->retired, NULL));
+	ASSERT_EQ(count_tree_children(parent), 1);
+
+	c = get_tree_child(parent, "keep-me");
+	ASSERT_NOT_NULL(c);
+
+	return 0;
+}
+
+TEST(test_free_retired_skips_static)
+{
+	struct inode *parent, *s, *old;
+	unsigned long s_ino;
+
+	/* create a parent with one dynamic child and one flagged as static */
+	parent = add_tree_node(get_tree_node(ROOT), "skip-static",
+	                       T_GENERIC, T_DIR);
+	s = add_tree_node(parent, "fake-static", T_GENERIC, T_FILE);
+	s->flags |= INODE_STATIC;
+	s_ino = s->ino;
+
+	add_tree_node(parent, "dynamic", T_GENERIC, T_FILE);
+
+	old = axchg(&parent->child, NULL);
+	free_retired(old);
+
+	/* static-flagged node must not be freed */
+	s = nodes + s_ino;
+	ASSERT_NULL(aload(&s->next_free));
+	ASSERT_STR_EQ(s->name, "fake-static");
+
+	return 0;
+}
+
 /* --- Error path tests --- */
 
 TEST(test_get_tree_node_boundary)
@@ -606,6 +655,14 @@ TEST(test_count_children_after_dedup)
 	return 0;
 }
 
+TEST(test_tree_destroy)
+{
+	tree_destroy();
+	ASSERT_NULL(nodes);
+
+	return 0;
+}
+
 int
 main(void)
 {
@@ -644,6 +701,11 @@ main(void)
 	RUN_TEST(test_rebuild_preserves_live);
 	RUN_TEST(test_pool_grow);
 	RUN_TEST(test_deleted_in_sibling_walk);
+	RUN_TEST(test_rebuild_restore_on_failure);
+	RUN_TEST(test_free_retired_skips_static);
+
+	/* must be last: tears down the pool */
+	RUN_TEST(test_tree_destroy);
 
 	TEST_SUMMARY();
 }
