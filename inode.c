@@ -25,7 +25,7 @@ set_obj(struct inode *n, struct git_object *obj)
 #define GIT_BRANCH(x)  (is_remote(x) ? \
                         GIT_BRANCH_REMOTE : GIT_BRANCH_LOCAL)
 
-#define GIT_HASH_SZ    GIT_OID_HEXSZ + 1
+#define GIT_HASH_SZ    (GIT_OID_HEXSZ + 1)
 
 struct hardcoded_dentry {
 	const char *name;
@@ -77,7 +77,7 @@ get_node_size(git_repository *repo, struct inode *node)
 
 	oid = git_object_id(node->obj);
 
-	// Does not load the file into memory
+	/* does not load the file into memory */
 	if (git_odb_read_header(&size, &type, odb, oid)) {
 		git_odb_free(odb);
 		return 0;
@@ -125,7 +125,7 @@ update_commit(git_repository *repo, struct inode *dir)
 		if (d->parent != T_COMMIT)
 			continue;
 
-		// Root commits have no parent
+		/* root commits have no parent */
 		if (d->type == T_PARENT &&
 		    git_commit_parentcount((git_commit *) dir->obj) == 0)
 			continue;
@@ -273,7 +273,7 @@ update_branches(git_repository *repo, struct inode *dir)
 	}
 
 	if (git_branch_iterator_new(&it, repo, GIT_BRANCH(dir)))
-	       return 1;
+		return 1;
 
 	while (git_branch_next(&r, &br_type, it) == 0) {
 		git_branch_name(&br, r);
@@ -289,8 +289,7 @@ update_branches(git_repository *repo, struct inode *dir)
 			br = br + l + 1;
 		}
 
-		// TODO: support multi-level branch names.
-		// e.g. users/pepe/sle12/branch
+		/* multi-level branch names not supported yet */
 		if (strchr(br, '/'))
 			continue;
 
@@ -299,7 +298,6 @@ update_branches(git_repository *repo, struct inode *dir)
 			set_obj(n, obj);
 	}
 
-	git_reference_free(r);
 	git_branch_iterator_free(it);
 
 	return 0;
@@ -349,15 +347,15 @@ update_tree(git_repository *repo, struct inode *dir)
 	git_object *obj;
 
 	c = git_tree_entrycount((git_tree *) dir->obj);
-	
+
 	for (i = 0; i < c; i++) {
 		dentry = git_tree_entry_byindex((git_tree *) dir->obj, i);
 		name = git_tree_entry_name(dentry);
 		mode = is_dentry_dir(dentry) ? T_DIR : T_FILE;
 
 		if (git_tree_entry_to_object(&obj, repo, dentry))
-		    continue;
-		
+			continue;
+
 		n = add_tree_node(dir, name, T_TREE, mode);
 		if (n)
 			set_obj(n, obj);
@@ -404,7 +402,7 @@ open_generic(git_repository *repo, struct inode *file)
 {
 	int fd;
 	const char *data = NULL;
-	char sha[GIT_HASH_SZ + 1] = {0};
+	char sha[GIT_HASH_SZ] = {0};
 
 	fd = memfd_create(file->name, 0);
 	if (fd == -1) {
