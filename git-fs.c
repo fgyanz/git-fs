@@ -118,7 +118,8 @@ gitfs_init(void *priv, struct fuse_conn_info *conn)
 	conf.passthrough = 1;
 
 	if (!fuse_set_feature_flag(conn, FUSE_CAP_PASSTHROUGH)) {
-		fprintf(stderr, "Failed to set FUSE_CAP_PASSTHROUGH\n");
+		fprintf(stderr, "git-fs: FUSE passthrough not available, "
+		        "falling back to buffered reads\n");
 		conf.passthrough = 0;
 	}
 
@@ -354,10 +355,13 @@ gitfs_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 
 	if (conf.passthrough) {
 		id = fuse_passthrough_open(req, fd);
-		if (id == 0)
+		if (id == 0) {
+			fprintf(stderr, "git-fs: FUSE passthrough not available, "
+			        "falling back to buffered reads\n");
 			conf.passthrough = 0;
-		else
+		} else {
 			fi->backing_id = n->backing_id = id;
+		}
 	}
 
 	fuse_reply_open(req, fi);
@@ -367,7 +371,13 @@ static void
 gitfs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
            struct fuse_file_info *fi)
 {
-	fuse_reply_err(req, ENOSYS);
+	struct fuse_bufvec buf = FUSE_BUFVEC_INIT(size);
+
+	buf.buf[0].flags = FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK;
+	buf.buf[0].fd = fi->fh;
+	buf.buf[0].pos = off;
+
+	fuse_reply_data(req, &buf, FUSE_BUF_SPLICE_MOVE);
 }
 
 static void
