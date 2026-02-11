@@ -134,13 +134,24 @@ gitfs_destroy(void *priv)
 }
 
 static void
+fill_entry(struct fuse_entry_param *e, struct inode *n)
+{
+	memset(e, 0, sizeof(*e));
+	e->ino = n->ino;
+	e->attr.st_ino = n->ino;
+	e->attr.st_mode = n->mode | GITFS_PERM;
+	e->attr.st_nlink = nlink(n->mode);
+	e->attr.st_size = n->size;
+	e->attr.st_uid = getuid();
+	e->attr.st_gid = getgid();
+}
+
+static void
 gitfs_lookup(fuse_req_t req, fuse_ino_t parent, const char *name)
 {
 	struct inode *p, *n;
 	struct fuse_entry_param e;
 	git_repository *repo;
-
-	memset(&e, 0, sizeof(e));
 
 	p = get_tree_node(parent);
 	if (!p) {
@@ -161,11 +172,7 @@ gitfs_lookup(fuse_req_t req, fuse_ino_t parent, const char *name)
 	}
 
 	tree_ref(n);
-
-	e.ino = n->ino;
-	e.attr.st_mode = n->mode | GITFS_PERM;
-	e.attr.st_nlink = nlink(n->mode);
-	e.attr.st_size = n->size;
+	fill_entry(&e, n);
 	fuse_reply_entry(req, &e);
 }
 
@@ -182,7 +189,7 @@ gitfs_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 	}
 
 	memset(&st, 0, sizeof(st));
-
+	st.st_ino = n->ino;
 	st.st_uid = getuid();
 	st.st_gid = getgid();
 	st.st_size = n->size;
@@ -197,10 +204,9 @@ gitfs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size,
               off_t off, struct fuse_file_info *fi)
 {
 	char *buf, *b, *name;
-	size_t sz, bsz, ndirs;
-	struct stat st;
-	struct inode *n, *p;
-	off_t i, s;
+	size_t sz, bsz;
+	struct fuse_entry_param e;
+	struct inode *n, *p, *head;
 
 	p = get_tree_node(ino);
 	if (!p) {
@@ -214,39 +220,51 @@ gitfs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size,
 		return;
 	}
 
-	ndirs = count_tree_children(p) + DIR_DEFAULTS;
 	bsz = size;
+	head = aload(&p->child);
 
-	for (i = off, b = buf; i < ndirs; b += sz) {
-		switch (i) {
-		case DIR_PARENT:
-			n = p->parent;
-			name = "..";
-			break;
+	for (b = buf; ; b += sz) {
+		switch (off) {
 		case DIR_CURRENT:
 			n = p;
 			name = ".";
 			break;
+		case DIR_PARENT:
+			n = p->parent;
+			name = "..";
+			/* seed cursor at first child */
+			fi->fh = (uint64_t) head;
+			break;
 		default:
-			s = i - DIR_DEFAULTS;
-			n = s ? get_tree_sibling(aload(&p->child), s)
-			      : aload(&p->child);
-			if (!n || !n->name) {
-				i = ndirs;
-				sz = 0;
-				continue;
+			n = (struct inode *) fi->fh;
+			if (!n)
+				goto out;
+			/* advance cursor past dead nodes */
+			while (aload(&n->flags) & INODE_DELETED) {
+				n = aload(&n->sibling);
+				if (n == head) {
+					n = NULL;
+					goto out;
+				}
 			}
 			name = n->name;
 		}
-		st.st_ino = n->ino;
-		st.st_mode = (n->mode | GITFS_PERM) << 12;
-		sz = fuse_add_direntry(req, b, bsz, name, &st, ++i);
+
+		fill_entry(&e, n);
+		sz = fuse_add_direntry_plus(req, b, bsz, name, &e, ++off);
 		if (sz > bsz)
 			break;
-
 		bsz -= sz;
+
+		/* bump nlookup and advance cursor for children */
+		if (off > DIR_DEFAULTS) {
+			tree_ref(n);
+			n = aload(&n->sibling);
+			fi->fh = (uint64_t)(n == head ? NULL : n);
+		}
 	}
 
+out:
 	fuse_reply_buf(req, buf, size - bsz);
 	free(buf);
 }
@@ -410,7 +428,7 @@ static const struct fuse_lowlevel_ops ops = {
 	.lookup = gitfs_lookup,
 	.forget = gitfs_forget,
 	.forget_multi = gitfs_forget_multi,
-	.readdir = gitfs_readdir,
+	.readdirplus = gitfs_readdir,
 	.releasedir = gitfs_releasedir,
 	.opendir = gitfs_opendir,
 	.open = gitfs_open,
