@@ -586,6 +586,145 @@ TEST(test_free_retired_skips_static)
 	return 0;
 }
 
+/* --- Cursor walk tests (readdirplus pattern) --- */
+
+/*
+ * Simulate the readdir cursor walk: start at head, advance via
+ * sibling pointer, stop when wrapping back to head, skip dead nodes.
+ * Returns the number of live nodes visited and fills seen[] with them.
+ */
+static int
+cursor_walk(struct inode *p, struct inode **seen, int max)
+{
+	struct inode *head, *cur;
+	int count = 0;
+
+	head = aload(&p->child);
+	cur = head;
+
+	while (cur) {
+		while (aload(&cur->flags) & INODE_DELETED) {
+			cur = aload(&cur->sibling);
+			if (cur == head) {
+				cur = NULL;
+				break;
+			}
+		}
+		if (!cur)
+			break;
+
+		if (count < max)
+			seen[count] = cur;
+		count++;
+
+		cur = aload(&cur->sibling);
+		if (cur == head)
+			cur = NULL;
+	}
+
+	return count;
+}
+
+TEST(test_cursor_walk_all_nodes)
+{
+	struct inode *parent, *seen[200];
+	char name[32];
+	int i, j, count;
+
+	parent = add_tree_node(get_tree_node(ROOT), "cursor-all",
+	                       T_GENERIC, T_DIR);
+
+	for (i = 0; i < 200; i++) {
+		snprintf(name, sizeof(name), "c-%03d", i);
+		add_tree_node(parent, name, T_GENERIC, T_FILE);
+	}
+
+	count = cursor_walk(parent, seen, 200);
+	ASSERT_EQ(count, 200);
+
+	/* no duplicates */
+	for (i = 0; i < count; i++)
+		for (j = i + 1; j < count; j++)
+			if (seen[i] == seen[j])
+				FAIL("duplicate at %d and %d: %s",
+				     i, j, seen[i]->name);
+
+	return 0;
+}
+
+TEST(test_cursor_walk_skip_dead)
+{
+	struct inode *parent, *b, *seen[4];
+	int count;
+
+	parent = add_tree_node(get_tree_node(ROOT), "cursor-dead",
+	                       T_GENERIC, T_DIR);
+	add_tree_node(parent, "ca", T_GENERIC, T_FILE);
+	b = add_tree_node(parent, "cb", T_GENERIC, T_FILE);
+	add_tree_node(parent, "cc", T_GENERIC, T_FILE);
+
+	afor(&b->flags, INODE_DELETED);
+
+	count = cursor_walk(parent, seen, 4);
+	ASSERT_EQ(count, 2);
+
+	/* deleted node must not appear */
+	for (int i = 0; i < count; i++)
+		ASSERT(seen[i] != b);
+
+	return 0;
+}
+
+TEST(test_cursor_walk_empty)
+{
+	struct inode *parent, *seen[1];
+	int count;
+
+	parent = add_tree_node(get_tree_node(ROOT), "cursor-empty",
+	                       T_GENERIC, T_DIR);
+
+	count = cursor_walk(parent, seen, 1);
+	ASSERT_EQ(count, 0);
+
+	return 0;
+}
+
+TEST(test_cursor_walk_single)
+{
+	struct inode *parent, *only, *seen[1];
+	int count;
+
+	parent = add_tree_node(get_tree_node(ROOT), "cursor-single",
+	                       T_GENERIC, T_DIR);
+	only = add_tree_node(parent, "only-child", T_GENERIC, T_FILE);
+
+	count = cursor_walk(parent, seen, 1);
+	ASSERT_EQ(count, 1);
+	ASSERT_EQ((long)seen[0], (long)only);
+
+	return 0;
+}
+
+TEST(test_cursor_walk_all_dead)
+{
+	struct inode *parent, *seen[1];
+	int count;
+
+	parent = add_tree_node(get_tree_node(ROOT), "cursor-alldead",
+	                       T_GENERIC, T_DIR);
+	afor(&add_tree_node(parent, "d1", T_GENERIC, T_FILE)->flags,
+	     INODE_DELETED);
+	afor(&add_tree_node(parent, "d2", T_GENERIC, T_FILE)->flags,
+	     INODE_DELETED);
+	afor(&add_tree_node(parent, "d3", T_GENERIC, T_FILE)->flags,
+	     INODE_DELETED);
+
+	count = cursor_walk(parent, seen, 1);
+	ASSERT_EQ(count, 0);
+
+	return 0;
+}
+
 /* --- Error path tests --- */
 
 TEST(test_get_tree_node_boundary)
@@ -691,6 +830,13 @@ main(void)
 	RUN_TEST(test_add_node_has_ops);
 	RUN_TEST(test_tree_path_shallow);
 	RUN_TEST(test_count_children_after_dedup);
+
+	/* Cursor walk tests (readdirplus pattern) */
+	RUN_TEST(test_cursor_walk_all_nodes);
+	RUN_TEST(test_cursor_walk_skip_dead);
+	RUN_TEST(test_cursor_walk_empty);
+	RUN_TEST(test_cursor_walk_single);
+	RUN_TEST(test_cursor_walk_all_dead);
 
 	/* Memory management tests */
 	RUN_TEST(test_deleted_skip);
