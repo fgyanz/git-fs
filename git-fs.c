@@ -19,6 +19,11 @@
 #define FUSE_DAEMON      1
 #define GITFS_PERM       0550
 
+/* immutable git objects (trees, blobs) can be cached long */
+#define CACHE_IMMUTABLE  86400.0
+/* mutable refs (branches, tags, HEAD pointer) need short timeouts */
+#define CACHE_REF        1.0
+
 struct gitfs_conf {
 	char *mnt;
 	char *repo;
@@ -27,6 +32,7 @@ struct gitfs_conf {
 
 struct gitfs_tls {
 	git_repository *repo;
+	git_odb *odb;
 };
 
 enum {
@@ -76,7 +82,7 @@ get_gitfs_tls(void)
 	return tls;
 }
 
-git_repository *
+static git_repository *
 get_gitfs_repo(void)
 {
 	char *repo_path = conf.repo;
@@ -93,6 +99,25 @@ get_gitfs_repo(void)
 	return tls->repo;
 }
 
+git_odb *
+get_gitfs_odb(void)
+{
+	struct gitfs_tls *tls = get_gitfs_tls();
+
+	if (tls == NULL)
+		return NULL;
+	if (tls->odb)
+		return tls->odb;
+
+	if (!tls->repo && !get_gitfs_repo())
+		return NULL;
+
+	if (git_repository_odb(&tls->odb, tls->repo))
+		return NULL;
+
+	return tls->odb;
+}
+
 static void
 thread_cleanup(void *priv)
 {
@@ -100,6 +125,8 @@ thread_cleanup(void *priv)
 
 	if (tls == NULL)
 		return;
+	if (tls->odb)
+		git_odb_free(tls->odb);
 	if (tls->repo)
 		git_repository_free(tls->repo);
 
@@ -133,11 +160,29 @@ gitfs_destroy(void *priv)
 	git_libgit2_shutdown();
 }
 
+static double
+cache_timeout(struct inode *n)
+{
+	switch (n->type) {
+	case T_TREE:
+	case T_HASH:
+	case T_MSG:
+	case T_GENERIC:
+		return CACHE_IMMUTABLE;
+	default:
+		return CACHE_REF;
+	}
+}
+
 static void
 fill_entry(struct fuse_entry_param *e, struct inode *n)
 {
+	double timeout = cache_timeout(n);
+
 	memset(e, 0, sizeof(*e));
 	e->ino = n->ino;
+	e->entry_timeout = timeout;
+	e->attr_timeout = timeout;
 	e->attr.st_ino = n->ino;
 	e->attr.st_mode = n->mode | GITFS_PERM;
 	e->attr.st_nlink = nlink(n->mode);
@@ -196,7 +241,7 @@ gitfs_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 	st.st_mode = n->mode | GITFS_PERM;
 	st.st_nlink = nlink(n->mode);
 
-	fuse_reply_attr(req, &st, 1.0);
+	fuse_reply_attr(req, &st, cache_timeout(n));
 }
 
 static void
@@ -319,8 +364,11 @@ gitfs_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 		goto out;
 
 	/* free old children, swap current list out, rebuild from git.
-	 * skip T_GENERIC dirs (ROOT, BRANCHES) whose children are static. */
+	 * skip T_GENERIC dirs (ROOT, BRANCHES) whose children are static.
+	 * skip T_TREE dirs whose git object is immutable by OID. */
 	if (n->type != T_GENERIC) {
+		if (n->type == T_TREE && aload(&n->child))
+			goto out;
 		free_retired(axchg(&n->retired, NULL));
 		astore(&n->retired, axchg(&n->child, NULL));
 	}
@@ -333,7 +381,6 @@ gitfs_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 	}
 
 out:
-
 	fuse_reply_open(req, fi);
 }
 
@@ -369,7 +416,7 @@ gitfs_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 	}
 
 	fi->fh = fd;
-	fi->keep_cache = 0;
+	fi->keep_cache = 1;
 
 	if (conf.passthrough) {
 		id = fuse_passthrough_open(req, fd);

@@ -1,6 +1,7 @@
 #ifndef INODE_H
 #define INODE_H
 
+#include <git2/oid.h>
 #include <sys/stat.h>
 
 #define T_DIR           S_IFDIR
@@ -64,6 +65,7 @@ struct inode {
 	struct inode *retired;
 	struct inode_ops *ops;
 	struct git_object *obj;
+	git_oid oid;
 	int backing_id;
 };
 

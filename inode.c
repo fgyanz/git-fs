@@ -53,13 +53,14 @@ is_remote(struct inode *n)
 	return n->parent->type == T_REMOTES;
 }
 
+extern git_odb *get_gitfs_odb(void);
+
 static size_t
-get_node_size(git_repository *repo, struct inode *node)
+get_node_size(struct inode *node)
 {
-	git_odb *odb = NULL;
+	git_odb *odb;
 	size_t size = 0;
 	git_otype type;
-	const git_oid *oid;
 
 	if (node->type == T_HASH)
 		return GIT_HASH_SZ;
@@ -70,20 +71,13 @@ get_node_size(git_repository *repo, struct inode *node)
 	if (node->mode == T_DIR)
 		return 0;
 
-	if (git_repository_odb(&odb, repo)) {
-		fprintf(stderr, "Failed to open ODB\n");
+	odb = get_gitfs_odb();
+	if (!odb)
 		return 0;
-	}
 
-	oid = git_object_id(node->obj);
-
-	/* does not load the file into memory */
-	if (git_odb_read_header(&size, &type, odb, oid)) {
-		git_odb_free(odb);
+	/* use stored oid; does not load the file into memory */
+	if (git_odb_read_header(&size, &type, odb, &node->oid))
 		return 0;
-	}
-
-	git_odb_free(odb);
 
 	return size;
 }
@@ -166,7 +160,7 @@ lookup_commit(git_repository *repo, struct inode *dir, const char *entry)
 	if (resolve_commit(n, dir, d->type))
 		return NULL;
 
-	n->size = get_node_size(repo, n);
+	n->size = get_node_size(n);
 
 	return n;
 }
@@ -337,6 +331,21 @@ lookup_branches(git_repository *repo, struct inode *dir, const char *entry)
 }
 
 static int
+resolve_tree_obj(git_repository *repo, struct inode *n)
+{
+	git_object *obj;
+
+	if (aload(&n->obj))
+		return 0;
+
+	if (git_object_lookup(&obj, repo, &n->oid, GIT_OBJECT_ANY))
+		return 1;
+
+	set_obj(n, obj);
+	return 0;
+}
+
+static int
 update_tree(git_repository *repo, struct inode *dir)
 {
 	struct inode *n;
@@ -344,7 +353,9 @@ update_tree(git_repository *repo, struct inode *dir)
 	size_t i, c;
 	const char *name;
 	mode_t mode;
-	git_object *obj;
+
+	if (resolve_tree_obj(repo, dir))
+		return 1;
 
 	c = git_tree_entrycount((git_tree *) dir->obj);
 
@@ -353,12 +364,11 @@ update_tree(git_repository *repo, struct inode *dir)
 		name = git_tree_entry_name(dentry);
 		mode = is_dentry_dir(dentry) ? T_DIR : T_FILE;
 
-		if (git_tree_entry_to_object(&obj, repo, dentry))
-			continue;
-
 		n = add_tree_node(dir, name, T_TREE, mode);
-		if (n)
-			set_obj(n, obj);
+		if (n) {
+			git_oid_cpy(&n->oid, git_tree_entry_id(dentry));
+			n->size = get_node_size(n);
+		}
 	}
 
 	return 0;
@@ -367,33 +377,29 @@ update_tree(git_repository *repo, struct inode *dir)
 static struct inode *
 lookup_tree(git_repository *repo, struct inode *dir, const char *entry)
 {
-	git_tree_entry *dentry;
-	git_object *obj;
-	struct inode *t, *n;
-	char path[PATH_MAX] = {0};
+	const git_tree_entry *te;
+	struct inode *n;
 	mode_t mode;
 
-	t = NULL;
-	tree_path(dir, path, sizeof(path), &t);
-	snprintf(path + strlen(path), sizeof(path), "/%s", entry);
+	n = get_tree_child(dir, entry);
+	if (!n) {
+		if (resolve_tree_obj(repo, dir))
+			return NULL;
 
-	if (git_tree_entry_bypath(&dentry, (git_tree *)t->obj, path + 1))
-		return NULL;
+		te = git_tree_entry_byname((git_tree *)dir->obj, entry);
+		if (!te)
+			return NULL;
 
-	if (git_tree_entry_to_object(&obj, repo, dentry)) {
-		git_tree_entry_free(dentry);
-		return NULL;
+		mode = is_dentry_dir(te) ? T_DIR : T_FILE;
+		n = add_tree_node(dir, entry, T_TREE, mode);
+		if (!n)
+			return NULL;
+		git_oid_cpy(&n->oid, git_tree_entry_id(te));
 	}
 
-	mode = is_dentry_dir(dentry)? T_DIR : T_FILE;
-	git_tree_entry_free(dentry);
-
-	n = add_tree_node(dir, entry, T_TREE, mode);
-	if (!n)
+	if (resolve_tree_obj(repo, n))
 		return NULL;
-	set_obj(n, obj);
-	n->size = get_node_size(repo, n);
-
+	n->size = get_node_size(n);
 	return n;
 }
 
@@ -403,6 +409,9 @@ open_generic(git_repository *repo, struct inode *file)
 	int fd;
 	const char *data = NULL;
 	char sha[GIT_HASH_SZ] = {0};
+
+	if (file->type == T_TREE && resolve_tree_obj(repo, file))
+		return -1;
 
 	fd = memfd_create(file->name, 0);
 	if (fd == -1) {
@@ -430,7 +439,7 @@ open_generic(git_repository *repo, struct inode *file)
 		return -1;
 	}
 
-	file->size = get_node_size(repo, file);
+	file->size = get_node_size(file);
 
 	if (write(fd, data, file->size) == -1) {
 		close(fd);
