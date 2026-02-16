@@ -2,6 +2,11 @@
 #include "../inode.h"
 #include "../tree.h"
 
+#include <git2.h>
+
+/* stub for inode.c's get_gitfs_odb() — tree tests don't use git */
+git_odb *get_gitfs_odb(void) { return NULL; }
+
 extern struct inode *nodes;
 
 TEST(test_tree_init)

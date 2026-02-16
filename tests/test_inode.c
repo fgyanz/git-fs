@@ -6,6 +6,18 @@
 #include <unistd.h>
 
 static git_repository *repo;
+static git_odb *test_odb;
+
+/* stub for inode.c's get_gitfs_odb() — uses the test repo */
+git_odb *
+get_gitfs_odb(void)
+{
+	if (test_odb)
+		return test_odb;
+	if (git_repository_odb(&test_odb, repo))
+		return NULL;
+	return test_odb;
+}
 
 /* Declared in inode.c */
 extern struct inode_ops *get_inode_ops(unsigned);
@@ -356,14 +368,16 @@ TEST(test_update_tree)
 	tree_ops = get_inode_ops(T_TREE);
 	ASSERT_EQ(tree_ops->update(repo, tree_node), 0);
 
-	/* Should contain file.txt and file2.txt */
+	/* Should contain file.txt and file2.txt with sizes set */
 	n = get_tree_child(tree_node, "file.txt");
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->mode, T_FILE);
+	ASSERT(n->size > 0);
 
 	n = get_tree_child(tree_node, "file2.txt");
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->mode, T_FILE);
+	ASSERT(n->size > 0);
 
 	return 0;
 }
@@ -836,6 +850,8 @@ main(void)
 	RUN_TEST(test_update_generic);
 	RUN_TEST(test_lookup_generic);
 
+	if (test_odb)
+		git_odb_free(test_odb);
 	git_repository_free(repo);
 out:
 	cleanup_test_repo(repo_path);
