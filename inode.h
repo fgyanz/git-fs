@@ -66,7 +66,6 @@ struct inode {
 	struct inode_ops *ops;
 	struct git_object *obj;
 	git_oid oid;
-	int backing_id;
 };
 
 extern struct inode_ops *get_inode_ops(unsigned);

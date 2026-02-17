@@ -333,7 +333,7 @@ lookup_branches(git_repository *repo, struct inode *dir, const char *entry)
 static int
 resolve_tree_obj(git_repository *repo, struct inode *n)
 {
-	git_object *obj;
+	git_object *obj, *expected;
 
 	if (aload(&n->obj))
 		return 0;
@@ -341,7 +341,10 @@ resolve_tree_obj(git_repository *repo, struct inode *n)
 	if (git_object_lookup(&obj, repo, &n->oid, GIT_OBJECT_ANY))
 		return 1;
 
-	set_obj(n, obj);
+	expected = NULL;
+	if (!acas(&n->obj, &expected, obj))
+		git_object_free(obj);
+
 	return 0;
 }
 

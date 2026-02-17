@@ -30,6 +30,12 @@ struct gitfs_conf {
 	int passthrough;
 };
 
+/* per-handle state for open files */
+struct gitfs_fh {
+	int fd;
+	int backing_id;
+};
+
 struct gitfs_tls {
 	git_repository *repo;
 	git_odb *odb;
@@ -394,8 +400,9 @@ static void
 gitfs_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 {
 	struct inode *n;
+	struct gitfs_fh *fh;
 	git_repository *repo;
-	int fd, id;
+	int id;
 
 	n = get_tree_node(ino);
 	if (!n) {
@@ -409,23 +416,30 @@ gitfs_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 		return;
 	}
 
-	fd = n->ops->open(repo, n);
-	if (fd == -1) {
+	fh = calloc(1, sizeof(*fh));
+	if (!fh) {
+		fuse_reply_err(req, ENOMEM);
+		return;
+	}
+
+	fh->fd = n->ops->open(repo, n);
+	if (fh->fd == -1) {
+		free(fh);
 		fuse_reply_err(req, errno);
 		return;
 	}
 
-	fi->fh = fd;
+	fi->fh = (uint64_t) fh;
 	fi->keep_cache = 1;
 
 	if (conf.passthrough) {
-		id = fuse_passthrough_open(req, fd);
+		id = fuse_passthrough_open(req, fh->fd);
 		if (id == 0) {
 			fprintf(stderr, "git-fs: FUSE passthrough not available, "
 			        "falling back to buffered reads\n");
 			conf.passthrough = 0;
 		} else {
-			fi->backing_id = n->backing_id = id;
+			fi->backing_id = fh->backing_id = id;
 		}
 	}
 
@@ -436,10 +450,11 @@ static void
 gitfs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
            struct fuse_file_info *fi)
 {
+	struct gitfs_fh *fh = (struct gitfs_fh *) fi->fh;
 	struct fuse_bufvec buf = FUSE_BUFVEC_INIT(size);
 
 	buf.buf[0].flags = FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK;
-	buf.buf[0].fd = fi->fh;
+	buf.buf[0].fd = fh->fd;
 	buf.buf[0].pos = off;
 
 	fuse_reply_data(req, &buf, FUSE_BUF_SPLICE_MOVE);
@@ -448,23 +463,13 @@ gitfs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 static void
 gitfs_release(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 {
-	int fd;
-	struct inode *n;
+	struct gitfs_fh *fh = (struct gitfs_fh *) fi->fh;
 
-	n = get_tree_node(ino);
-	if (!n) {
-		fuse_reply_err(req, ENOENT);
-		return;
-	}
+	if (fh->backing_id)
+		fuse_passthrough_close(req, fh->backing_id);
 
-	fd = fi->fh;
-
-	if (n->backing_id) {
-		fuse_passthrough_close(req, n->backing_id);
-		n->backing_id = 0;
-	}
-
-	close(fd);
+	close(fh->fd);
+	free(fh);
 	fuse_reply_err(req, 0);
 }
 
