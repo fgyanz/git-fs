@@ -38,9 +38,10 @@ uninstall:
 
 TESTS = tests/test_tree tests/test_inode
 
-test: $(TESTS)
+test: $(TESTS) $(BIN)
 	./tests/test_tree
 	./tests/test_inode
+	./tests/test_mount.sh
 
 tests/test_tree: tests/test_tree.c tree.c inode.c inode.h tree.h
 	$(CC) $(CFLAGS) -o $@ tests/test_tree.c tree.c inode.c $(LIBS)

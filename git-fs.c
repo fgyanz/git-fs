@@ -16,7 +16,6 @@
 
 #define GITFS_VERSION    "0.1"
 #define FUSE_CLONE_FD    1
-#define FUSE_DAEMON      1
 #define GITFS_PERM       0550
 
 /* immutable git objects (trees, blobs) can be cached long */
@@ -27,6 +26,7 @@
 struct gitfs_conf {
 	char *mnt;
 	char *repo;
+	int foreground;
 	int passthrough;
 };
 
@@ -44,6 +44,7 @@ struct gitfs_tls {
 enum {
 	OPT_MOUNT_PATH,
 	OPT_REPOSITORY_PATH,
+	OPT_FOREGROUND,
 	OPT_HELP,
 	OPT_VERSION,
 };
@@ -61,6 +62,8 @@ static struct fuse_opt gitfs_opts[] = {
 	GIT_OPT_KEY("--mount %s", mnt,		OPT_MOUNT_PATH),
 	GIT_OPT_KEY("-r %s", repo, 		OPT_REPOSITORY_PATH),
 	GIT_OPT_KEY("--repository %s", repo,	OPT_REPOSITORY_PATH),
+	FUSE_OPT_KEY("-f",			OPT_FOREGROUND),
+	FUSE_OPT_KEY("--foreground",		OPT_FOREGROUND),
 	FUSE_OPT_KEY("-V",			OPT_VERSION),
 	FUSE_OPT_KEY("--version",		OPT_VERSION),
 	FUSE_OPT_KEY("-h",			OPT_HELP),
@@ -496,6 +499,7 @@ print_help(void)
 		"options:\n"
 		"\t-m	--mount		File system mount path.\n"
 		"\t-r	--repository	Local git repository path.\n"
+		"\t-f	--foreground	Run in the foreground.\n"
 		"\t-h	--help		Print this help.\n"
 		"\t-V	--version	Print version.\n");
 }
@@ -504,6 +508,9 @@ static int
 gitfs_opt_handler(void *data, const char *arg, int key, struct fuse_args *out)
 {
 	switch(key) {
+	case OPT_FOREGROUND:
+		conf.foreground = 1;
+		return 0;
 	case OPT_HELP:
 		print_help();
 		exit(EXIT_SUCCESS);
@@ -576,7 +583,7 @@ main(int argc, char *argv[])
 	if (fuse_session_mount(se, conf.mnt) != 0)
 		goto err_out2;
 
-	fuse_daemonize(FUSE_DAEMON);
+	fuse_daemonize(conf.foreground);
 
 	c = fuse_loop_cfg_create();
 	fuse_loop_cfg_set_clone_fd(c, FUSE_CLONE_FD);
