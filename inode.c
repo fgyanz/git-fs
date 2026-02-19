@@ -129,6 +129,7 @@ update_commit(git_repository *repo, struct inode *dir)
 			return 1;
 		if (resolve_commit(n, dir, d->type))
 			return 1;
+		n->size = get_node_size(n);
 	}
 
 	return 0;

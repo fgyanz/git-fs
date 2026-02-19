@@ -145,7 +145,7 @@ assert_eq "$NESTED" "nested" "read_nested_blob"
 
 # --- open/read: tag commit ---
 TAG_MSG=$(cat "$MNT/tags/v1.0/msg")
-assert_contains "$TAG_MSG" "second commit" "read_tag_msg"
+assert_contains "$TAG_MSG" "add large directory" "read_tag_msg"
 
 # --- open/read: parent commit ---
 PARENT_MSG=$(cat "$MNT/HEAD/parent/msg")

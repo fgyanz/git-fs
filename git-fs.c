@@ -36,6 +36,12 @@ struct gitfs_fh {
 	int backing_id;
 };
 
+/* per-handle state for open directories */
+struct gitfs_dh {
+	struct inode *cursor;
+	struct inode *head;
+};
+
 struct gitfs_tls {
 	git_repository *repo;
 	git_odb *odb;
@@ -260,7 +266,8 @@ gitfs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size,
 	char *buf, *b, *name;
 	size_t sz, bsz;
 	struct fuse_entry_param e;
-	struct inode *n, *p, *head;
+	struct inode *n, *p;
+	struct gitfs_dh *dh = (struct gitfs_dh *) fi->fh;
 
 	p = get_tree_node(ino);
 	if (!p) {
@@ -275,8 +282,6 @@ gitfs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size,
 	}
 
 	bsz = size;
-	head = aload(&p->child);
-
 	for (b = buf; ; b += sz) {
 		switch (off) {
 		case DIR_CURRENT:
@@ -286,17 +291,16 @@ gitfs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size,
 		case DIR_PARENT:
 			n = p->parent;
 			name = "..";
-			/* seed cursor at first child */
-			fi->fh = (uint64_t) head;
+			dh->cursor = dh->head;
 			break;
 		default:
-			n = (struct inode *) fi->fh;
+			n = dh->cursor;
 			if (!n)
 				goto out;
 			/* advance cursor past dead nodes */
 			while (aload(&n->flags) & INODE_DELETED) {
 				n = aload(&n->sibling);
-				if (n == head) {
+				if (n == dh->head) {
 					n = NULL;
 					goto out;
 				}
@@ -314,7 +318,7 @@ gitfs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size,
 		if (off > DIR_DEFAULTS) {
 			tree_ref(n);
 			n = aload(&n->sibling);
-			fi->fh = (uint64_t)(n == head ? NULL : n);
+			dh->cursor = (n == dh->head) ? NULL : n;
 		}
 	}
 
@@ -355,6 +359,7 @@ static void
 gitfs_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 {
 	struct inode *n;
+	struct gitfs_dh *dh;
 	git_repository *repo;
 
 	n = get_tree_node(ino);
@@ -366,6 +371,12 @@ gitfs_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 	repo = get_gitfs_repo();
 	if (!repo) {
 		fuse_reply_err(req, EIO);
+		return;
+	}
+
+	dh = calloc(1, sizeof(*dh));
+	if (!dh) {
+		fuse_reply_err(req, ENOMEM);
 		return;
 	}
 
@@ -385,17 +396,21 @@ gitfs_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 	if (n->ops->update(repo, n)) {
 		if (n->type != T_GENERIC)
 			astore(&n->child, axchg(&n->retired, NULL));
+		free(dh);
 		fuse_reply_err(req, EIO);
 		return;
 	}
 
 out:
+	dh->head = aload(&n->child);
+	fi->fh = (uint64_t) dh;
 	fuse_reply_open(req, fi);
 }
 
 static void
 gitfs_releasedir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 {
+	free((struct gitfs_dh *) fi->fh);
 	fuse_reply_err(req, 0);
 }
 
