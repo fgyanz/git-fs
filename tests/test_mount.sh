@@ -18,7 +18,7 @@ fi
 
 cleanup() {
 	fusermount3 -u "$MNT" 2>/dev/null || true
-	rm -rf "$REPO" "$MNT"
+	rm -rf "$REPO" "$MNT" "$REMOTE"
 }
 
 assert_eq() {
@@ -87,6 +87,13 @@ git add manyfiles
 git commit -q -m "add large directory"
 git tag v1.0
 git branch feature
+
+# Set up a remote with tracking branches
+REMOTE=$(mktemp -d /tmp/git-fs-test-remote-XXXXXX)
+git clone -q --bare "$REPO" "$REMOTE"
+git remote add origin "$REMOTE"
+git fetch -q origin
+
 cd - > /dev/null
 
 echo "test_mount:"
@@ -239,6 +246,53 @@ BRANCH_HASH=$(cat "$MNT/tags/v1.0/hash")
 # tag was created before the large dir commit, so hashes differ now
 # just verify tag hash is valid
 assert_match "$BRANCH_HASH" "^[0-9a-f]{40}$" "tag_hash_valid"
+
+# --- readdir: remote branches ---
+REMOTE_LS=$(ls "$MNT/branches/remotes/")
+assert_contains "$REMOTE_LS" "origin" "readdir_remotes_origin"
+
+REMOTE_BR_LS=$(ls "$MNT/branches/remotes/origin/")
+assert_contains "$REMOTE_BR_LS" "master" "readdir_remote_branches_master"
+
+# --- open/read: remote branch commit ---
+REMOTE_HASH=$(cat "$MNT/branches/remotes/origin/master/hash")
+HEAD_HASH=$(cat "$MNT/HEAD/hash")
+assert_eq "$REMOTE_HASH" "$HEAD_HASH" "remote_branch_matches_HEAD"
+
+# --- ref refresh: new branch appears after mount ---
+cd "$REPO"
+git branch newbranch
+cd - > /dev/null
+sleep 1.5
+NEW_BR_LS=$(ls "$MNT/branches/heads/")
+assert_contains "$NEW_BR_LS" "newbranch" "ref_refresh_new_branch"
+
+# --- ref refresh: new tag appears after mount ---
+cd "$REPO"
+git tag v2.0
+cd - > /dev/null
+sleep 1.5
+NEW_TAG_LS=$(ls "$MNT/tags/")
+assert_contains "$NEW_TAG_LS" "v2.0" "ref_refresh_new_tag"
+
+# --- HEAD refresh: HEAD changes after mount ---
+OLD_HEAD=$(cat "$MNT/HEAD/hash")
+cd "$REPO"
+echo "new" > newfile.txt
+git add newfile.txt
+git commit -q -m "post-mount commit"
+cd - > /dev/null
+sleep 1.5
+NEW_HEAD=$(cat "$MNT/HEAD/hash")
+if [ "$OLD_HEAD" != "$NEW_HEAD" ]; then
+	PASS=$((PASS + 1))
+	printf "  %-40s  ok\n" "head_refresh_after_commit"
+else
+	FAIL=$((FAIL + 1))
+	printf "  FAIL %-34s  HEAD hash unchanged after commit\n" "head_refresh_after_commit"
+fi
+NEW_HEAD_MSG=$(cat "$MNT/HEAD/msg")
+assert_contains "$NEW_HEAD_MSG" "post-mount commit" "head_refresh_msg"
 
 # Unmount
 fusermount3 -u "$MNT"
