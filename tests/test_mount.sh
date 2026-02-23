@@ -275,6 +275,50 @@ sleep 1.5
 NEW_TAG_LS=$(ls "$MNT/tags/")
 assert_contains "$NEW_TAG_LS" "v2.0" "ref_refresh_new_tag"
 
+# --- concurrent: parallel reads of different files ---
+for i in 1 2 3 4 5 6 7 8; do
+	cat "$MNT/HEAD/tree/manyfiles/f-$(printf '%03d' $((i * 60))).txt" > /tmp/git-fs-par-$i &
+done
+wait
+PAR_OK=1
+for i in 1 2 3 4 5 6 7 8; do
+	expected="content-$(printf '%03d' $((i * 60)))"
+	got=$(cat /tmp/git-fs-par-$i)
+	rm -f /tmp/git-fs-par-$i
+	if [ "$got" != "$expected" ]; then PAR_OK=0; fi
+done
+assert_eq "$PAR_OK" "1" "concurrent_parallel_reads"
+
+# --- concurrent: parallel readdir on the same large directory ---
+for i in 1 2 3 4; do
+	ls -1 "$MNT/HEAD/tree/manyfiles/" | sort > /tmp/git-fs-ls-$i &
+done
+wait
+LSREF=$(ls -1 "$MNT/HEAD/tree/manyfiles/" | sort)
+LS_OK=1
+for i in 1 2 3 4; do
+	got=$(cat /tmp/git-fs-ls-$i)
+	rm -f /tmp/git-fs-ls-$i
+	if [ "$got" != "$LSREF" ]; then LS_OK=0; fi
+done
+assert_eq "$LS_OK" "1" "concurrent_parallel_readdir"
+
+# --- concurrent: readdir + lookup on different paths ---
+ls "$MNT/branches/heads/" > /dev/null &
+PID1=$!
+cat "$MNT/HEAD/tree/file.txt" > /tmp/git-fs-mix-1 &
+PID2=$!
+ls -1 "$MNT/HEAD/tree/manyfiles/" > /tmp/git-fs-mix-2 &
+PID3=$!
+cat "$MNT/tags/v1.0/hash" > /tmp/git-fs-mix-3 &
+PID4=$!
+wait $PID1 $PID2 $PID3 $PID4
+assert_eq "$(cat /tmp/git-fs-mix-1)" "hello" "concurrent_mixed_read"
+MIX_LS=$(wc -l < /tmp/git-fs-mix-2)
+assert_eq "$MIX_LS" "500" "concurrent_mixed_readdir"
+assert_match "$(cat /tmp/git-fs-mix-3)" "^[0-9a-f]{40}$" "concurrent_mixed_hash"
+rm -f /tmp/git-fs-mix-1 /tmp/git-fs-mix-2 /tmp/git-fs-mix-3
+
 # --- HEAD refresh: HEAD changes after mount ---
 OLD_HEAD=$(cat "$MNT/HEAD/hash")
 cd "$REPO"
