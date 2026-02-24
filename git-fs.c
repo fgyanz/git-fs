@@ -28,6 +28,7 @@ struct gitfs_conf {
 	char *repo;
 	int foreground;
 	int passthrough;
+	int allow_other;
 };
 
 /* per-handle state for open files */
@@ -53,6 +54,7 @@ enum {
 	OPT_FOREGROUND,
 	OPT_HELP,
 	OPT_VERSION,
+	OPT_ALLOW_OTHER,
 };
 
 enum {
@@ -72,6 +74,8 @@ static struct fuse_opt gitfs_opts[] = {
 	FUSE_OPT_KEY("--foreground",		OPT_FOREGROUND),
 	FUSE_OPT_KEY("-V",			OPT_VERSION),
 	FUSE_OPT_KEY("--version",		OPT_VERSION),
+	FUSE_OPT_KEY("-a",			OPT_ALLOW_OTHER),
+	FUSE_OPT_KEY("--allow-other",		OPT_ALLOW_OTHER),
 	FUSE_OPT_KEY("-h",			OPT_HELP),
 	FUSE_OPT_KEY("--help",			OPT_HELP),
 	FUSE_OPT_END
@@ -514,6 +518,7 @@ print_help(void)
 		"options:\n"
 		"\t-m	--mount		File system mount path.\n"
 		"\t-r	--repository	Local git repository path.\n"
+		"\t-a	--allow-other	Allow other users to access the mount.\n"
 		"\t-f	--foreground	Run in the foreground.\n"
 		"\t-h	--help		Print this help.\n"
 		"\t-V	--version	Print version.\n");
@@ -523,6 +528,9 @@ static int
 gitfs_opt_handler(void *data, const char *arg, int key, struct fuse_args *out)
 {
 	switch(key) {
+	case OPT_ALLOW_OTHER:
+		conf.allow_other = 1;
+		return 0;
 	case OPT_FOREGROUND:
 		conf.foreground = 1;
 		return 0;
@@ -570,6 +578,8 @@ static void
 set_fuse_args(struct fuse_args *args)
 {
 	fuse_opt_add_arg(args, "-oauto_unmount,default_permissions,ro");
+	if (conf.allow_other)
+		fuse_opt_add_arg(args, "-oallow_other");
 }
 
 int
