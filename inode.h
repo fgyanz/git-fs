@@ -55,6 +55,7 @@ struct inode {
 	unsigned flags;
 	unsigned long nlookup;
 	size_t size;
+	time_t mtime;
 	union {
 		struct inode *parent;
 		unsigned long parent_ino;

@@ -194,6 +194,22 @@ cache_timeout(struct inode *n)
 }
 
 static void
+fill_stat(struct stat *st, struct inode *n)
+{
+	st->st_ino = n->ino;
+	st->st_uid = getuid();
+	st->st_gid = getgid();
+	st->st_size = n->size;
+	st->st_mode = n->mode | GITFS_PERM;
+	st->st_nlink = nlink(n->mode);
+	st->st_mtime = n->mtime;
+	st->st_atime = n->mtime;
+	st->st_ctime = n->mtime;
+	st->st_blksize = 4096;
+	st->st_blocks = (n->size + 511) / 512;
+}
+
+static void
 fill_entry(struct fuse_entry_param *e, struct inode *n)
 {
 	double timeout = cache_timeout(n);
@@ -202,12 +218,7 @@ fill_entry(struct fuse_entry_param *e, struct inode *n)
 	e->ino = n->ino;
 	e->entry_timeout = timeout;
 	e->attr_timeout = timeout;
-	e->attr.st_ino = n->ino;
-	e->attr.st_mode = n->mode | GITFS_PERM;
-	e->attr.st_nlink = nlink(n->mode);
-	e->attr.st_size = n->size;
-	e->attr.st_uid = getuid();
-	e->attr.st_gid = getgid();
+	fill_stat(&e->attr, n);
 }
 
 static void
@@ -253,12 +264,7 @@ gitfs_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 	}
 
 	memset(&st, 0, sizeof(st));
-	st.st_ino = n->ino;
-	st.st_uid = getuid();
-	st.st_gid = getgid();
-	st.st_size = n->size;
-	st.st_mode = n->mode | GITFS_PERM;
-	st.st_nlink = nlink(n->mode);
+	fill_stat(&st, n);
 
 	fuse_reply_attr(req, &st, cache_timeout(n));
 }

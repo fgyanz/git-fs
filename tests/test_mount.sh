@@ -319,6 +319,84 @@ assert_eq "$MIX_LS" "500" "concurrent_mixed_readdir"
 assert_match "$(cat /tmp/git-fs-mix-3)" "^[0-9a-f]{40}$" "concurrent_mixed_hash"
 rm -f /tmp/git-fs-mix-1 /tmp/git-fs-mix-2 /tmp/git-fs-mix-3
 
+# --- getattr: mtime matches git commit time ---
+HEAD_COMMIT_TIME=$(cd "$REPO" && git log -1 --format='%ct' HEAD)
+STAT_MTIME=$(stat -c '%Y' "$MNT/HEAD/tree/file.txt")
+assert_eq "$STAT_MTIME" "$HEAD_COMMIT_TIME" "mtime_file_matches_commit"
+
+# --- getattr: hash mtime matches commit ---
+STAT_HASH_MTIME=$(stat -c '%Y' "$MNT/HEAD/hash")
+assert_eq "$STAT_HASH_MTIME" "$HEAD_COMMIT_TIME" "mtime_hash_matches_commit"
+
+# --- getattr: msg mtime matches commit ---
+STAT_MSG_MTIME=$(stat -c '%Y' "$MNT/HEAD/msg")
+assert_eq "$STAT_MSG_MTIME" "$HEAD_COMMIT_TIME" "mtime_msg_matches_commit"
+
+# --- getattr: tree/ dir mtime matches commit ---
+STAT_TREE_MTIME=$(stat -c '%Y' "$MNT/HEAD/tree")
+assert_eq "$STAT_TREE_MTIME" "$HEAD_COMMIT_TIME" "mtime_tree_dir_matches_commit"
+
+# --- getattr: nested file inherits commit mtime ---
+STAT_NESTED_MTIME=$(stat -c '%Y' "$MNT/HEAD/tree/subdir/inner.txt")
+assert_eq "$STAT_NESTED_MTIME" "$HEAD_COMMIT_TIME" "mtime_nested_file_propagates"
+
+# --- getattr: subdir inherits commit mtime ---
+STAT_SUBDIR_MTIME=$(stat -c '%Y' "$MNT/HEAD/tree/subdir")
+assert_eq "$STAT_SUBDIR_MTIME" "$HEAD_COMMIT_TIME" "mtime_subdir_propagates"
+
+# --- getattr: parent commit has nonzero mtime ---
+PARENT_MTIME=$(stat -c '%Y' "$MNT/HEAD/parent")
+PARENT_COMMIT_TIME=$(cd "$REPO" && git log -1 --format='%ct' HEAD~1)
+assert_eq "$PARENT_MTIME" "$PARENT_COMMIT_TIME" "mtime_parent_matches_git"
+
+# --- getattr: tag mtime matches tagged commit ---
+TAG_COMMIT_TIME=$(cd "$REPO" && git log -1 --format='%ct' v1.0)
+TAG_MTIME=$(stat -c '%Y' "$MNT/tags/v1.0")
+assert_eq "$TAG_MTIME" "$TAG_COMMIT_TIME" "mtime_tag_matches_git"
+
+# --- getattr: branch mtime matches branch tip ---
+FEATURE_TIME=$(cd "$REPO" && git log -1 --format='%ct' feature)
+FEATURE_MTIME=$(stat -c '%Y' "$MNT/branches/heads/feature")
+assert_eq "$FEATURE_MTIME" "$FEATURE_TIME" "mtime_branch_matches_git"
+
+# --- getattr: HEAD directory mtime matches commit ---
+HEAD_DIR_MTIME=$(stat -c '%Y' "$MNT/HEAD")
+assert_eq "$HEAD_DIR_MTIME" "$HEAD_COMMIT_TIME" "mtime_HEAD_dir_matches_commit"
+
+# --- getattr: static nodes have mtime 0 ---
+ROOT_MTIME=$(stat -c '%Y' "$MNT")
+assert_eq "$ROOT_MTIME" "0" "mtime_root_is_zero"
+
+BRANCHES_MTIME=$(stat -c '%Y' "$MNT/branches")
+assert_eq "$BRANCHES_MTIME" "0" "mtime_branches_is_zero"
+
+TAGS_MTIME=$(stat -c '%Y' "$MNT/tags")
+assert_eq "$TAGS_MTIME" "0" "mtime_tags_dir_is_zero"
+
+# --- getattr: atime and ctime match mtime ---
+STAT_ATIME=$(stat -c '%X' "$MNT/HEAD/tree/file.txt")
+STAT_CTIME=$(stat -c '%Z' "$MNT/HEAD/tree/file.txt")
+assert_eq "$STAT_ATIME" "$HEAD_COMMIT_TIME" "atime_matches_commit"
+assert_eq "$STAT_CTIME" "$HEAD_COMMIT_TIME" "ctime_matches_commit"
+
+# --- getattr: st_blksize is 4096 ---
+STAT_BLKSIZE=$(stat -c '%o' "$MNT/HEAD/tree/file.txt")
+assert_eq "$STAT_BLKSIZE" "4096" "blksize_is_4096"
+
+# --- getattr: st_blocks for file ---
+# file.txt is 6 bytes: (6+511)/512 = 1 block
+STAT_BLOCKS=$(stat -c '%b' "$MNT/HEAD/tree/file.txt")
+assert_eq "$STAT_BLOCKS" "1" "blocks_file"
+
+# --- getattr: st_blocks for hash ---
+# hash is 41 bytes: (41+511)/512 = 1 block
+STAT_HASH_BLOCKS=$(stat -c '%b' "$MNT/HEAD/hash")
+assert_eq "$STAT_HASH_BLOCKS" "1" "blocks_hash"
+
+# --- getattr: st_blocks for directory is 0 ---
+STAT_DIR_BLOCKS=$(stat -c '%b' "$MNT/HEAD/tree")
+assert_eq "$STAT_DIR_BLOCKS" "0" "blocks_dir_zero"
+
 # --- HEAD refresh: HEAD changes after mount ---
 OLD_HEAD=$(cat "$MNT/HEAD/hash")
 cd "$REPO"

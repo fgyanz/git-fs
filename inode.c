@@ -22,6 +22,13 @@ set_obj(struct inode *n, struct git_object *obj)
 		git_object_free(old);
 }
 
+static inline void
+set_commit(struct inode *n, git_object *obj)
+{
+	set_obj(n, obj);
+	n->mtime = git_commit_time((git_commit *) obj);
+}
+
 #define GIT_BRANCH(x)  (is_remote(x) ? \
                         GIT_BRANCH_REMOTE : GIT_BRANCH_LOCAL)
 
@@ -93,16 +100,18 @@ resolve_commit(struct inode *n, struct inode *dir, unsigned type)
 	case T_PARENT:
 		if (git_commit_parent(&c, (git_commit *) dir->obj, 0))
 			return 1;
-		set_obj(n, (git_object *) c);
+		set_commit(n, (git_object *) c);
 		break;
 	case T_TREE:
 		if (git_commit_tree(&t, (git_commit *) dir->obj))
 			return 1;
 		set_obj(n, (git_object *) t);
+		n->mtime = dir->mtime;
 		break;
 	default:
 		git_object_dup(&dup, dir->obj);
 		set_obj(n, dup);
+		n->mtime = dir->mtime;
 	}
 	return 0;
 }
@@ -184,7 +193,7 @@ update_tags(git_repository *repo, struct inode *dir)
 		tag = (char *) git_reference_name(r);
 		n = add_tree_node(dir, basename(tag), T_COMMIT, T_DIR);
 		if (n)
-			set_obj(n, obj);
+			set_commit(n, obj);
 	}
 
 	git_reference_iterator_free(it);
@@ -213,7 +222,7 @@ lookup_tags(git_repository *repo, struct inode *dir, const char *entry)
 	n = add_tree_node(dir, entry, T_COMMIT, T_DIR);
 	if (!n)
 		return NULL;
-	set_obj(n, obj);
+	set_commit(n, obj);
 
 	return n;
 }
@@ -290,7 +299,7 @@ update_branches(git_repository *repo, struct inode *dir)
 
 		n = add_tree_node(dir, br, T_COMMIT, T_DIR);
 		if (n)
-			set_obj(n, obj);
+			set_commit(n, obj);
 	}
 
 	git_branch_iterator_free(it);
@@ -326,7 +335,7 @@ lookup_branches(git_repository *repo, struct inode *dir, const char *entry)
 	n = add_tree_node(dir, entry, T_COMMIT, T_DIR);
 	if (!n)
 		return NULL;
-	set_obj(n, obj);
+	set_commit(n, obj);
 
 	return n;
 }
@@ -372,6 +381,7 @@ update_tree(git_repository *repo, struct inode *dir)
 		if (n) {
 			git_oid_cpy(&n->oid, git_tree_entry_id(dentry));
 			n->size = get_node_size(n);
+			n->mtime = dir->mtime;
 		}
 	}
 
@@ -401,9 +411,8 @@ lookup_tree(git_repository *repo, struct inode *dir, const char *entry)
 		git_oid_cpy(&n->oid, git_tree_entry_id(te));
 	}
 
-	if (resolve_tree_obj(repo, n))
-		return NULL;
 	n->size = get_node_size(n);
+	n->mtime = dir->mtime;
 	return n;
 }
 
@@ -469,7 +478,7 @@ update_head(git_repository *repo, struct inode *n)
 	}
 
 	git_object_free(obj);
-	set_obj(n, commit);
+	set_commit(n, commit);
 
 	return 0;
 }
