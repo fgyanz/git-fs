@@ -209,9 +209,7 @@ is_dead(struct inode *n)
 	return aload(&n->flags) & INODE_DELETED;
 }
 
-/* add a child to p's circular sibling list.
- * if a child with the same name exists, return it instead.
- * empty list: self-loop. non-empty: insert after head. */
+/* add a child to p. returns existing child if name already taken. */
 struct inode *
 add_tree_node(struct inode *p, const char *name, unsigned type, mode_t mode)
 {
@@ -249,7 +247,7 @@ add_tree_node(struct inode *p, const char *name, unsigned type, mode_t mode)
 	return n;
 }
 
-/* look up an inode by number. returns NULL if freed, deleted, or out of range. */
+/* look up a live inode by number. */
 struct inode *
 get_tree_node(unsigned long ino)
 {
@@ -267,7 +265,7 @@ get_tree_node(unsigned long ino)
 	return n;
 }
 
-/* find a live child of p by name. walks the circular sibling list. */
+/* find a live child of p by name. */
 struct inode *
 get_tree_child(struct inode *p, const char *name)
 {
@@ -287,7 +285,7 @@ get_tree_child(struct inode *p, const char *name)
 	return NULL;
 }
 
-/* walk pos live siblings forward from node. used by readdir for offsets. */
+/* skip pos live siblings forward. used by readdir. */
 struct inode *
 get_tree_sibling(struct inode *node, off_t pos)
 {
@@ -303,7 +301,7 @@ get_tree_sibling(struct inode *node, off_t pos)
 	return s;
 }
 
-/* count live children of p (skips deleted nodes). */
+/* count live children of p. */
 size_t
 count_tree_children(struct inode *p)
 {
@@ -322,9 +320,7 @@ count_tree_children(struct inode *p)
 	return c;
 }
 
-/* build the relative path from a nested tree node up to its root tree.
- * walks parent pointers until it leaves T_TREE nodes, then reconstructs
- * the path in forward order. */
+/* build the path from node up to the nearest non-tree ancestor. */
 void
 tree_path(struct inode *node, char *opath, size_t size, struct inode **tree)
 {
@@ -349,7 +345,7 @@ tree_path(struct inode *node, char *opath, size_t size, struct inode **tree)
 	}
 }
 
-/* free the name and git object held by a node. */
+/* release name and git object. */
 static void
 clear_node(struct inode *n)
 {
@@ -363,16 +359,15 @@ clear_node(struct inode *n)
 		git_object_free(obj);
 }
 
-/* increment the kernel reference count on n. called on each lookup reply. */
+/* the kernel looked up this node; bump its ref count. */
 void
 tree_ref(struct inode *n)
 {
 	afadd(&n->nlookup, 1);
 }
 
-/* drop nlookup references. when it reaches zero, mark the node as deleted
- * and free its resources. if the node was already detached from its parent
- * (by free_retired), reclaim the slot immediately. */
+/* the kernel is done with this node. when refs hit zero, delete it.
+ * if already detached from its parent, reclaim the slot too. */
 void
 tree_forget(struct inode *n, unsigned long nlookup)
 {
@@ -390,17 +385,14 @@ tree_forget(struct inode *n, unsigned long nlookup)
 	afor(&n->flags, INODE_DELETED);
 	clear_node(n);
 
-	/* flags may have changed since our first read */
+	/* re-read: flags may have changed */
 	f = aload(&n->flags);
 	if (f & INODE_DETACHED)
 		push_free(n);
 }
 
-/* walk a retired circular sibling list and reclaim nodes.
- * - unreferenced nodes: free resources and return slot to the pool.
- * - referenced nodes (kernel still uses them): mark as detached so
- *   tree_forget reclaims them later.
- * - static nodes: skip. */
+/* reclaim a retired child list. nodes still held by the kernel
+ * are marked detached so tree_forget cleans them up later. */
 void
 free_retired(struct inode *head)
 {
