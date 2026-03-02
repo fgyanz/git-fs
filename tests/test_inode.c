@@ -1064,7 +1064,8 @@ TEST(test_lookup_tree_lazy_obj)
 	ASSERT_NOT_NULL(tree_ops->open);
 	fd = tree_ops->open(repo, n);
 	ASSERT(fd >= 0);
-	ASSERT_NOT_NULL(n->obj);
+	/* blob dropped after write; re-loaded on next open */
+	ASSERT_NULL(n->obj);
 	close(fd);
 
 	return 0;

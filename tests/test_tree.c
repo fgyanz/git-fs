@@ -8,6 +8,7 @@
 git_odb *get_gitfs_odb(void) { return NULL; }
 
 extern struct inode *nodes;
+extern unsigned long *free_next;
 
 TEST(test_tree_init)
 {
@@ -433,8 +434,7 @@ TEST(test_forget_detached)
 	tree_forget(n, 1);
 
 	/* Node should be on free list now */
-	n = nodes + ino;
-	ASSERT_NOT_NULL(aload(&n->next_free));
+	ASSERT(aload(&free_next[ino]) != 0);
 
 	return 0;
 }
@@ -461,8 +461,8 @@ TEST(test_free_retired)
 	free_retired(old);
 
 	/* Slots should be back on free list */
-	ASSERT_NOT_NULL(aload(&(nodes + ino1)->next_free));
-	ASSERT_NOT_NULL(aload(&(nodes + ino2)->next_free));
+	ASSERT(aload(&free_next[ino1]) != 0);
+	ASSERT(aload(&free_next[ino2]) != 0);
 
 	return 0;
 }
@@ -493,7 +493,7 @@ TEST(test_rebuild_preserves_live)
 
 	/* forgetting a detached node should reclaim it */
 	tree_forget(live, 1);
-	ASSERT_NOT_NULL(aload(&(nodes + live_ino)->next_free));
+	ASSERT(aload(&free_next[live_ino]) != 0);
 
 	return 0;
 }
@@ -585,7 +585,7 @@ TEST(test_free_retired_skips_static)
 
 	/* static-flagged node must not be freed */
 	s = nodes + s_ino;
-	ASSERT_NULL(aload(&s->next_free));
+	ASSERT_EQ(aload(&free_next[s_ino]), 0);
 	ASSERT_STR_EQ(s->name, "fake-static");
 
 	return 0;

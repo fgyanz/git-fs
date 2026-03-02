@@ -62,7 +62,6 @@ struct inode {
 	};
 	struct inode *sibling;
 	struct inode *child;
-	struct inode *next_free;
 	struct inode *retired;
 	struct inode_ops *ops;
 	struct git_object *obj;

@@ -15,6 +15,7 @@
 #include "tree.h"
 
 #define GITFS_VERSION    "0.1"
+#define GIT_CACHE_MAX    (32 << 20)  /* 32 MB */
 #define FUSE_CLONE_FD    1
 #define GITFS_PERM       0550
 
@@ -156,6 +157,7 @@ static void
 gitfs_init(void *priv, struct fuse_conn_info *conn)
 {
 	git_libgit2_init();
+	git_libgit2_opts(GIT_OPT_SET_CACHE_MAX_SIZE, GIT_CACHE_MAX);
 
 	if (tree_init())
 		exit(EXIT_FAILURE);

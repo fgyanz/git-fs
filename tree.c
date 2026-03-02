@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,12 +11,13 @@
 #include "inode.h"
 #include "tree.h"
 
-#define TREE_MAX         (16 << 20)
+#define TREE_MAX         (1 << 20)
 #define TREE_BATCH       4096
 #define MAX_TREE_DEPTH   200
 
-/* marks the end of the free list (so next_free is never NULL on it) */
-static struct inode free_end;
+/* marks the last entry in the free list. 0 means "not on the list". */
+#define FREE_END         ((unsigned long)-1)
+#define BATCH_RECLAIM    UINT_MAX
 
 static struct inode top[] = {
 	{},
@@ -68,31 +70,83 @@ static struct inode top[] = {
 };
 
 struct inode *nodes;
-static struct inode *ftop;   /* free list head */
-static size_t nhwm;          /* high-water mark: inodes past this are unused */
-static size_t nmax;          /* total mmap capacity */
 
-/* clear the node and put it back on the free list.
- * uses relaxed orderings since the swap loop on ftop is self-contained. */
+/* free list lives outside the inode pages so we can give pages back
+ * to the kernel without breaking the list. */
+unsigned long *free_next;        /* next free ino, or 0 if in use */
+static unsigned long ftop_ino;   /* head of free list, 0 = empty */
+static unsigned *batch_nfree;    /* free count per batch */
+static size_t nhwm;              /* next unused ino */
+static size_t nmax;              /* pool capacity */
+
+/* add ino to the front of the free list. */
+static void
+push_list(unsigned long ino)
+{
+	unsigned long t;
+
+	do {
+		t = __atomic_load_n(&ftop_ino, __ATOMIC_RELAXED);
+		__atomic_store_n(&free_next[ino], t ? t : FREE_END,
+				 __ATOMIC_RELAXED);
+	} while (!__atomic_compare_exchange_n(&ftop_ino, &t, ino, 1,
+			__ATOMIC_RELEASE, __ATOMIC_RELAXED));
+}
+
+/* take one slot from batch bi. returns -1 if the batch is
+ * being given back to the kernel right now. */
+static int
+claim_batch(unsigned bi)
+{
+	unsigned old;
+
+	for (;;) {
+		old = aload(&batch_nfree[bi]);
+		if (old == BATCH_RECLAIM)
+			return -1;
+		if (acas(&batch_nfree[bi], &old, old - 1))
+			return 0;
+	}
+}
+
+/* if every inode in a batch is free, give the pages back to the
+ * kernel. they stay on the free list and get fresh pages on reuse. */
+static void
+try_reclaim(unsigned bi)
+{
+	unsigned expected;
+
+	if (bi == 0)
+		return;  /* batch 0 has static inodes */
+
+	expected = TREE_BATCH;
+	if (!acas(&batch_nfree[bi], &expected, BATCH_RECLAIM))
+		return;
+
+	madvise((char *)(nodes + (size_t)bi * TREE_BATCH),
+		TREE_BATCH * sizeof(struct inode), MADV_DONTNEED);
+
+	astore(&batch_nfree[bi], TREE_BATCH);
+}
+
+/* wipe the node and put it back on the free list. */
 static void
 push_free(struct inode *n)
 {
-	struct inode *t;
 	unsigned long ino = n->ino;
+	unsigned bi = ino / TREE_BATCH;
+	unsigned old;
 
 	memset(n, 0, sizeof(*n));
 	n->ino = ino;
 
-	do {
-		t = __atomic_load_n(&ftop, __ATOMIC_RELAXED);
-		__atomic_store_n(&n->next_free, t ? t : &free_end,
-				 __ATOMIC_RELAXED);
-	} while (!__atomic_compare_exchange_n(&ftop, &t, n, 1,
-			__ATOMIC_RELEASE, __ATOMIC_RELAXED));
+	old = afadd(&batch_nfree[bi], 1);
+	push_list(ino);
+	if (old + 1 == TREE_BATCH)
+		try_reclaim(bi);
 }
 
-/* extend the free list with a new batch from the mmap pool.
- * only one thread wins the swap on nhwm; the rest return. */
+/* bring a new batch of inodes into the free list. */
 static void
 grow(void)
 {
@@ -111,33 +165,42 @@ grow(void)
 
 	for (i = old; i < end; i++) {
 		nodes[i].ino = i;
-		push_free(nodes + i);
+		afadd(&batch_nfree[i / TREE_BATCH], 1);
+		push_list(i);
 	}
 }
 
-/* pop a node from the free list. grows the pool if empty. */
+/* grab a free node. grows the pool if needed. */
 static struct inode *
 new_node(void)
 {
-	struct inode *n, *nx;
+	unsigned long ino, nx;
 
+retry:
 	for (;;) {
-		n = aload(&ftop);
-		if (!n) {
+		ino = aload(&ftop_ino);
+		if (!ino) {
 			grow();
-			n = aload(&ftop);
-			if (!n)
+			ino = aload(&ftop_ino);
+			if (!ino)
 				return NULL;
 		}
-		nx = __atomic_load_n(&n->next_free, __ATOMIC_RELAXED);
-		if (nx == &free_end)
-			nx = NULL;
-		if (acas(&ftop, &n, nx))
+		nx = __atomic_load_n(&free_next[ino], __ATOMIC_RELAXED);
+		if (nx == FREE_END)
+			nx = 0;
+		if (acas(&ftop_ino, &ino, nx))
 			break;
 	}
 
-	astore(&n->next_free, NULL);
-	return n;
+	/* still looks free to get_tree_node until we clear free_next */
+	if (claim_batch(ino / TREE_BATCH)) {
+		push_list(ino);
+		goto retry;
+	}
+
+	astore(&free_next[ino], 0);
+	nodes[ino].ino = ino;  /* page may have been wiped by reclaim */
+	return nodes + ino;
 }
 
 static inline int
@@ -196,7 +259,7 @@ get_tree_node(unsigned long ino)
 		return NULL;
 
 	n = nodes + ino;
-	if (aload(&n->next_free))
+	if (aload(&free_next[ino]))
 		return NULL;
 	if (is_dead(n))
 		return NULL;
@@ -361,7 +424,7 @@ free_retired(struct inode *head)
 	} while (c != head);
 }
 
-/* free all remaining nodes and release the mmap pool. called at shutdown. */
+/* shutdown: free everything. */
 void
 tree_destroy(void)
 {
@@ -372,17 +435,18 @@ tree_destroy(void)
 
 	hwm = aload(&nhwm);
 	for (i = TOP_INODES; i < hwm; i++) {
-		struct inode *n = nodes + i;
-		if (aload(&n->next_free))
+		if (aload(&free_next[i]))
 			continue;
-		clear_node(n);
+		clear_node(nodes + i);
 	}
 
 	munmap(nodes, nmax * sizeof(struct inode));
+	munmap(free_next, nmax * sizeof(*free_next));
+	free(batch_nfree);
 	nodes = NULL;
 }
 
-/* reserve the mmap pool, set up the static inodes, and fill the free list. */
+/* set up the pools, static inodes, and initial free list. */
 int
 tree_init(void)
 {
@@ -396,6 +460,21 @@ tree_init(void)
 		     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (nodes == MAP_FAILED) {
 		fprintf(stderr, "%s:%s\n", __func__, strerror(errno));
+		return 1;
+	}
+
+	free_next = mmap(NULL, nmax * sizeof(*free_next),
+			 PROT_READ | PROT_WRITE,
+			 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (free_next == MAP_FAILED) {
+		munmap(nodes, nmax * sizeof(struct inode));
+		return 1;
+	}
+
+	batch_nfree = calloc(nmax / TREE_BATCH, sizeof(*batch_nfree));
+	if (!batch_nfree) {
+		munmap(free_next, nmax * sizeof(*free_next));
+		munmap(nodes, nmax * sizeof(struct inode));
 		return 1;
 	}
 

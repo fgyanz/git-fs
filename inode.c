@@ -461,6 +461,10 @@ open_generic(git_repository *repo, struct inode *file)
 		return -1;
 	}
 
+	/* content copied to memfd; drop the blob. re-loaded from OID if needed. */
+	if (file->type == T_TREE)
+		set_obj(file, NULL);
+
 	return fd;
 }
 
