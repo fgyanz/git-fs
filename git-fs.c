@@ -30,6 +30,7 @@ struct gitfs_conf {
 	int foreground;
 	int passthrough;
 	int allow_other;
+	char *unmount;
 };
 
 /* per-handle state for open files */
@@ -56,6 +57,7 @@ enum {
 	OPT_HELP,
 	OPT_VERSION,
 	OPT_ALLOW_OTHER,
+	OPT_UNMOUNT,
 };
 
 enum {
@@ -77,6 +79,8 @@ static struct fuse_opt gitfs_opts[] = {
 	FUSE_OPT_KEY("--version",		OPT_VERSION),
 	FUSE_OPT_KEY("-a",			OPT_ALLOW_OTHER),
 	FUSE_OPT_KEY("--allow-other",		OPT_ALLOW_OTHER),
+	GIT_OPT_KEY("-u %s", unmount,		OPT_UNMOUNT),
+	GIT_OPT_KEY("--unmount %s", unmount,	OPT_UNMOUNT),
 	FUSE_OPT_KEY("-h",			OPT_HELP),
 	FUSE_OPT_KEY("--help",			OPT_HELP),
 	FUSE_OPT_END
@@ -527,6 +531,7 @@ print_help(void)
 		"\t-m	--mount		File system mount path.\n"
 		"\t-r	--repository	Local git repository path.\n"
 		"\t-a	--allow-other	Allow other users to access the mount.\n"
+		"\t-u	--unmount	Unmount the file system at path.\n"
 		"\t-f	--foreground	Run in the foreground.\n"
 		"\t-h	--help		Print this help.\n"
 		"\t-V	--version	Print version.\n");
@@ -541,6 +546,8 @@ gitfs_opt_handler(void *data, const char *arg, int key, struct fuse_args *out)
 		return 0;
 	case OPT_FOREGROUND:
 		conf.foreground = 1;
+		return 0;
+	case OPT_UNMOUNT:
 		return 0;
 	case OPT_HELP:
 		print_help();
@@ -564,6 +571,19 @@ set_gitfs_conf(struct fuse_args *args, struct gitfs_conf *conf)
 
 	if (fuse_opt_parse(args, conf, gitfs_opts, gitfs_opt_handler))
 		exit(EXIT_FAILURE);
+
+	if (conf->unmount) {
+		mnt = realpath(conf->unmount, NULL);
+		if (mnt == NULL) {
+			fprintf(stderr, "git-fs: %s: %s\n",
+				conf->unmount, strerror(errno));
+			exit(EXIT_FAILURE);
+		}
+		execlp("fusermount3", "fusermount3", "-u", mnt, NULL);
+		fprintf(stderr, "git-fs: failed to exec fusermount3: %s\n",
+			strerror(errno));
+		exit(EXIT_FAILURE);
+	}
 
 	if (conf->repo == NULL) {
 		fprintf(stderr, "-r/--repository option is mandatory. Aborting.\n");

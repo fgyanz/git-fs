@@ -416,9 +416,37 @@ fi
 NEW_HEAD_MSG=$(cat "$MNT/HEAD/msg")
 assert_contains "$NEW_HEAD_MSG" "post-mount commit" "head_refresh_msg"
 
-# Unmount
+# Unmount via fusermount3
 fusermount3 -u "$MNT"
 assert_eq "$?" "0" "unmount_succeeds"
+
+# --- Unmount flag: -u/--unmount ---
+
+# Remount for unmount flag tests
+"$GITFS" -r "$REPO" -m "$MNT"
+sleep 0.3
+ls "$MNT/HEAD" > /dev/null 2>&1
+assert_eq "$?" "0" "remount_for_unmount_test"
+
+"$GITFS" -u "$MNT"
+assert_eq "$?" "0" "unmount_flag_short"
+sleep 0.3
+MOUNTED=0; grep -q "$MNT" /proc/mounts && MOUNTED=1
+assert_eq "$MOUNTED" "0" "unmount_flag_short_verified"
+
+# Remount for --unmount long flag
+"$GITFS" -r "$REPO" -m "$MNT"
+sleep 0.3
+
+"$GITFS" --unmount "$MNT"
+assert_eq "$?" "0" "unmount_flag_long"
+sleep 0.3
+MOUNTED=0; grep -q "$MNT" /proc/mounts && MOUNTED=1
+assert_eq "$MOUNTED" "0" "unmount_flag_long_verified"
+
+# Bad path
+BAD_RET=0; "$GITFS" -u /nonexistent/path 2>/dev/null || BAD_RET=$?
+assert_eq "$BAD_RET" "1" "unmount_bad_path"
 
 echo
 TOTAL=$((PASS + FAIL))
