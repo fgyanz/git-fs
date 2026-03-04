@@ -4,6 +4,7 @@
 #include <limits.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -567,19 +568,19 @@ gitfs_opt_handler(void *data, const char *arg, int key, struct fuse_args *out)
 static void
 set_gitfs_conf(struct fuse_args *args, struct gitfs_conf *conf)
 {
-	char *repo, *mnt;
+	char *repo, *umnt, mnt[PATH_MAX];
 
 	if (fuse_opt_parse(args, conf, gitfs_opts, gitfs_opt_handler))
 		exit(EXIT_FAILURE);
 
 	if (conf->unmount) {
-		mnt = realpath(conf->unmount, NULL);
-		if (mnt == NULL) {
+		umnt = realpath(conf->unmount, NULL);
+		if (umnt == NULL) {
 			fprintf(stderr, "git-fs: %s: %s\n",
 				conf->unmount, strerror(errno));
 			exit(EXIT_FAILURE);
 		}
-		execlp("fusermount3", "fusermount3", "-u", mnt, NULL);
+		execlp("fusermount3", "fusermount3", "-u", umnt, NULL);
 		fprintf(stderr, "git-fs: failed to exec fusermount3: %s\n",
 			strerror(errno));
 		exit(EXIT_FAILURE);
@@ -593,13 +594,18 @@ set_gitfs_conf(struct fuse_args *args, struct gitfs_conf *conf)
 	repo = calloc(PATH_MAX, sizeof(char));
 	conf->repo = realpath(conf->repo, repo);
 
-	mnt = calloc(PATH_MAX, sizeof(char));
-	if (conf->mnt == NULL) {
+	if (conf->mnt == NULL)
 		snprintf(mnt, PATH_MAX, "%s-fs",  conf->repo);
-		conf->mnt = mnt;
-	 } else {
-		conf->mnt = realpath(conf->mnt, mnt);
-	 }
+	else
+		snprintf(mnt, PATH_MAX, "%s", conf->mnt);
+
+	if (mkdir(mnt, 0755) && errno != EEXIST) {
+		fprintf(stderr, "git-fs: mkdir %s: %s\n",
+			mnt, strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+
+	conf->mnt = realpath(mnt, NULL);
 }
 
 static void

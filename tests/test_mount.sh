@@ -448,6 +448,37 @@ assert_eq "$MOUNTED" "0" "unmount_flag_long_verified"
 BAD_RET=0; "$GITFS" -u /nonexistent/path 2>/dev/null || BAD_RET=$?
 assert_eq "$BAD_RET" "1" "unmount_bad_path"
 
+# --- mkdir: -m creates mountpoint if it doesn't exist ---
+NEW_MNT=$(mktemp -d /tmp/git-fs-test-mnt-XXXXXX)
+rm -rf "$NEW_MNT"
+"$GITFS" -r "$REPO" -m "$NEW_MNT"
+sleep 0.3
+assert_eq "$(test -d "$NEW_MNT" && echo yes)" "yes" "mkdir_creates_mountpoint"
+ls "$NEW_MNT/HEAD" > /dev/null 2>&1
+assert_eq "$?" "0" "mkdir_mount_works"
+fusermount3 -u "$NEW_MNT"
+rmdir "$NEW_MNT"
+
+# --- mkdir: default <repo>-fs mountpoint is auto-created ---
+DEFAULT_MNT="${REPO}-fs"
+rm -rf "$DEFAULT_MNT"
+"$GITFS" -r "$REPO"
+sleep 0.3
+assert_eq "$(test -d "$DEFAULT_MNT" && echo yes)" "yes" "mkdir_default_created"
+ls "$DEFAULT_MNT/HEAD" > /dev/null 2>&1
+assert_eq "$?" "0" "mkdir_default_mount_works"
+fusermount3 -u "$DEFAULT_MNT"
+rmdir "$DEFAULT_MNT"
+
+# --- mkdir: -m with existing directory still works ---
+EXIST_MNT=$(mktemp -d /tmp/git-fs-test-mnt-XXXXXX)
+"$GITFS" -r "$REPO" -m "$EXIST_MNT"
+sleep 0.3
+ls "$EXIST_MNT/HEAD" > /dev/null 2>&1
+assert_eq "$?" "0" "mkdir_existing_dir_works"
+fusermount3 -u "$EXIST_MNT"
+rmdir "$EXIST_MNT"
+
 echo
 TOTAL=$((PASS + FAIL))
 echo "$PASS/$TOTAL tests passed"
