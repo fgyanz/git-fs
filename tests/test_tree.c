@@ -31,6 +31,13 @@ TEST(test_tree_init)
 	ASSERT_STR_EQ(n->name, "tags");
 	ASSERT_EQ(n->parent->ino, ROOT);
 
+	n = get_tree_node(OBJECTS);
+	ASSERT_NOT_NULL(n);
+	ASSERT_STR_EQ(n->name, "objects");
+	ASSERT_EQ(n->parent->ino, ROOT);
+	ASSERT_EQ(n->type, T_OBJECTS);
+	ASSERT_NOT_NULL(n->ops);
+
 	n = get_tree_node(HEAD);
 	ASSERT_NOT_NULL(n);
 	ASSERT_STR_EQ(n->name, "HEAD");

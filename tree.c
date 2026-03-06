@@ -45,6 +45,7 @@ static struct inode top[] = {
 		.ino = OBJECTS,
 		.parent_ino = ROOT,
 		.mode = T_DIR,
+		.type = T_OBJECTS,
 	},
 	{
 		.name = "HEAD",

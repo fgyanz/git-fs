@@ -107,6 +107,7 @@ ROOT_LS=$(ls "$MNT")
 assert_contains "$ROOT_LS" "HEAD" "readdir_root_HEAD"
 assert_contains "$ROOT_LS" "branches" "readdir_root_branches"
 assert_contains "$ROOT_LS" "tags" "readdir_root_tags"
+assert_contains "$ROOT_LS" "objects" "readdir_root_objects"
 
 # --- readdir: commit directory ---
 COMMIT_LS=$(ls "$MNT/HEAD")
@@ -133,6 +134,61 @@ assert_contains "$BR_LS" "feature" "readdir_branches_feature"
 # --- readdir: tags ---
 TAG_LS=$(ls "$MNT/tags/")
 assert_contains "$TAG_LS" "v1.0" "readdir_tags_v1.0"
+
+# --- readdir: objects directory ---
+OBJ_LS=$(ls "$MNT/objects/")
+# Should contain at least one hex SHA
+assert_match "$OBJ_LS" "^[0-9a-f]{40}$" "readdir_objects_hex_entries"
+OBJ_COUNT=$(echo "$OBJ_LS" | wc -l)
+# Test repo has 3 commits (first, second, add large directory)
+assert_eq "$OBJ_COUNT" "3" "readdir_objects_count"
+
+# --- objects: lookup by known hash ---
+HEAD_SHA=$(cd "$REPO" && git rev-parse HEAD)
+OBJ_COMMIT_LS=$(ls "$MNT/objects/$HEAD_SHA/")
+assert_contains "$OBJ_COMMIT_LS" "tree" "objects_commit_has_tree"
+assert_contains "$OBJ_COMMIT_LS" "hash" "objects_commit_has_hash"
+assert_contains "$OBJ_COMMIT_LS" "msg" "objects_commit_has_msg"
+assert_contains "$OBJ_COMMIT_LS" "parent" "objects_commit_has_parent"
+
+# --- objects: hash file matches directory name ---
+OBJ_HASH=$(cat "$MNT/objects/$HEAD_SHA/hash")
+assert_eq "$OBJ_HASH" "$HEAD_SHA" "objects_hash_matches_name"
+
+# --- objects: msg is readable ---
+OBJ_MSG=$(cat "$MNT/objects/$HEAD_SHA/msg")
+assert_contains "$OBJ_MSG" "add large directory" "objects_msg_readable"
+
+# --- objects: tree contains files ---
+OBJ_TREE_LS=$(ls "$MNT/objects/$HEAD_SHA/tree/")
+assert_contains "$OBJ_TREE_LS" "file.txt" "objects_tree_has_files"
+
+# --- objects: parent chain works ---
+PARENT_SHA=$(cd "$REPO" && git rev-parse HEAD~1)
+OBJ_PARENT_HASH=$(cat "$MNT/objects/$HEAD_SHA/parent/hash")
+assert_eq "$OBJ_PARENT_HASH" "$PARENT_SHA" "objects_parent_chain"
+
+# --- objects: root commit via direct hash ---
+ROOT_SHA=$(cd "$REPO" && git rev-parse HEAD~2)
+OBJ_ROOT_LS=$(ls "$MNT/objects/$ROOT_SHA/")
+assert_contains "$OBJ_ROOT_LS" "tree" "objects_root_commit_tree"
+assert_contains "$OBJ_ROOT_LS" "msg" "objects_root_commit_msg"
+# Root commit has no parent
+if echo "$OBJ_ROOT_LS" | grep -q "^parent$"; then
+	FAIL=$((FAIL + 1))
+	printf "  FAIL %-34s  root commit should not have parent\n" "objects_root_no_parent"
+else
+	PASS=$((PASS + 1))
+	printf "  %-40s  ok\n" "objects_root_no_parent"
+fi
+
+# --- objects: invalid hash returns error ---
+assert_fail "ls '$MNT/objects/not-a-hash'" "objects_invalid_hash"
+assert_fail "ls '$MNT/objects/0000000000000000000000000000000000000000'" "objects_nonexistent_hash"
+
+# --- objects: stat shows directory ---
+STAT_OBJ=$(stat -c '%F' "$MNT/objects/$HEAD_SHA")
+assert_eq "$STAT_OBJ" "directory" "objects_commit_is_dir"
 
 # --- open/read: hash file ---
 HASH=$(cat "$MNT/HEAD/hash")

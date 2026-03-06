@@ -117,11 +117,35 @@ resolve_commit(struct inode *n, struct inode *dir, unsigned type)
 }
 
 static int
+resolve_commit_obj(git_repository *repo, struct inode *n)
+{
+	git_object *obj, *expected;
+
+	if (aload(&n->obj))
+		return 0;
+
+	if (git_object_lookup(&obj, repo, &n->oid, GIT_OBJECT_COMMIT))
+		return 1;
+
+	expected = NULL;
+	if (!acas(&n->obj, &expected, obj))
+		git_object_free(obj);
+
+	return 0;
+}
+
+static int
 update_commit(git_repository *repo, struct inode *dir)
 {
 	int i;
 	struct inode *n;
 	struct hardcoded_dentry *d;
+
+	if (resolve_commit_obj(repo, dir))
+		return 1;
+
+	if (!dir->mtime)
+		dir->mtime = git_commit_time((git_commit *) dir->obj);
 
 	for (i = 0; i < ARRAY_SIZE(dentries); i++) {
 		d = dentries + i;
@@ -163,6 +187,12 @@ lookup_commit(git_repository *repo, struct inode *dir, const char *entry)
 
 	if (!d)
 		return NULL;
+
+	if (resolve_commit_obj(repo, dir))
+		return NULL;
+
+	if (!dir->mtime)
+		dir->mtime = git_commit_time((git_commit *) dir->obj);
 
 	n = add_tree_node(dir, d->name, d->type, d->mode);
 	if (!n)
@@ -488,6 +518,56 @@ update_head(git_repository *repo, struct inode *n)
 }
 
 static int
+update_objects(git_repository *repo, struct inode *dir)
+{
+	git_revwalk *walk;
+	git_oid oid;
+	char hex[GIT_OID_HEXSZ + 1];
+	struct inode *n;
+
+	if (git_revwalk_new(&walk, repo))
+		return 1;
+
+	if (git_revwalk_push_glob(walk, "refs/*")) {
+		git_revwalk_free(walk);
+		return 1;
+	}
+
+	while (git_revwalk_next(&oid, walk) == 0) {
+		git_oid_tostr(hex, sizeof(hex), &oid);
+		n = add_tree_node(dir, hex, T_COMMIT, T_DIR);
+		if (n)
+			git_oid_cpy(&n->oid, &oid);
+	}
+
+	git_revwalk_free(walk);
+	return 0;
+}
+
+static struct inode *
+lookup_objects(git_repository *repo, struct inode *dir, const char *entry)
+{
+	git_oid oid;
+	git_object *obj;
+	struct inode *n;
+
+	if (git_oid_fromstr(&oid, entry))
+		return NULL;
+
+	if (git_object_lookup(&obj, repo, &oid, GIT_OBJECT_COMMIT))
+		return NULL;
+
+	n = add_tree_node(dir, entry, T_COMMIT, T_DIR);
+	if (!n) {
+		git_object_free(obj);
+		return NULL;
+	}
+	set_commit(n, obj);
+
+	return n;
+}
+
+static int
 update_generic(git_repository *repo, struct inode *dir)
 {
 	struct inode *n;
@@ -545,6 +625,10 @@ struct inode_ops ops[T_ALL] =
 	},
 	{
 		.open = open_generic,
+	},
+	{
+		.update = update_objects,
+		.lookup = lookup_objects,
 	},
 };
 

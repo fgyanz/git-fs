@@ -644,6 +644,179 @@ TEST(test_lookup_remote_branches)
 	return 0;
 }
 
+/* --- Objects tests --- */
+
+TEST(test_update_objects)
+{
+	struct inode *objects, *n;
+	struct inode_ops *ops;
+	size_t count;
+
+	objects = get_tree_node(OBJECTS);
+	ASSERT_NOT_NULL(objects);
+	ASSERT_EQ(objects->type, T_OBJECTS);
+
+	ops = get_inode_ops(T_OBJECTS);
+	ASSERT_NOT_NULL(ops);
+	ASSERT_NOT_NULL(ops->update);
+	ASSERT_EQ(ops->update(repo, objects), 0);
+
+	count = count_tree_children(objects);
+	/* Test repo has 2 commits (first + second) */
+	ASSERT(count >= 2);
+
+	/* All children should be T_COMMIT directories with hex names.
+	 * obj is NOT loaded — only OID is stored (lazy resolve). */
+	n = objects->child;
+	ASSERT_NOT_NULL(n);
+	ASSERT_EQ(n->type, T_COMMIT);
+	ASSERT_EQ(n->mode, T_DIR);
+	ASSERT_NULL(n->obj);
+	ASSERT_EQ(strlen(n->name), 40);
+
+	return 0;
+}
+
+TEST(test_lookup_objects)
+{
+	struct inode *objects, *n;
+	struct inode_ops *ops;
+	git_object *obj;
+	char hex[GIT_OID_HEXSZ + 1];
+
+	objects = get_tree_node(OBJECTS);
+	ops = get_inode_ops(T_OBJECTS);
+
+	/* Get HEAD's SHA to use as a known-good hash */
+	if (git_revparse_single(&obj, repo, "HEAD"))
+		FAIL("git_revparse_single failed");
+	git_oid_tostr(hex, sizeof(hex), git_object_id(obj));
+	git_object_free(obj);
+
+	n = ops->lookup(repo, objects, hex);
+	ASSERT_NOT_NULL(n);
+	ASSERT_EQ(n->type, T_COMMIT);
+	ASSERT_EQ(n->mode, T_DIR);
+	ASSERT_NOT_NULL(n->obj);
+	ASSERT(n->mtime > 0);
+	ASSERT_STR_EQ(n->name, hex);
+
+	return 0;
+}
+
+TEST(test_lookup_objects_invalid)
+{
+	struct inode *objects;
+	struct inode_ops *ops;
+
+	objects = get_tree_node(OBJECTS);
+	ops = get_inode_ops(T_OBJECTS);
+
+	/* Non-hex string */
+	ASSERT_NULL(ops->lookup(repo, objects, "not-a-hash"));
+
+	/* Too short */
+	ASSERT_NULL(ops->lookup(repo, objects, "abcdef"));
+
+	/* Valid hex but non-existent OID */
+	ASSERT_NULL(ops->lookup(repo, objects,
+		"0000000000000000000000000000000000000000"));
+
+	/* Empty string */
+	ASSERT_NULL(ops->lookup(repo, objects, ""));
+
+	return 0;
+}
+
+TEST(test_objects_commit_structure)
+{
+	struct inode *objects, *commit_node, *n;
+	struct inode_ops *obj_ops, *commit_ops;
+	git_object *obj;
+	char hex[GIT_OID_HEXSZ + 1];
+
+	objects = get_tree_node(OBJECTS);
+	obj_ops = get_inode_ops(T_OBJECTS);
+
+	/* Look up HEAD commit by hash */
+	if (git_revparse_single(&obj, repo, "HEAD"))
+		FAIL("git_revparse_single failed");
+	git_oid_tostr(hex, sizeof(hex), git_object_id(obj));
+	git_object_free(obj);
+
+	commit_node = obj_ops->lookup(repo, objects, hex);
+	ASSERT_NOT_NULL(commit_node);
+
+	/* Update the commit to populate children */
+	commit_ops = get_inode_ops(T_COMMIT);
+	ASSERT_EQ(commit_ops->update(repo, commit_node), 0);
+
+	/* Should have: tree, hash, msg, parent */
+	n = get_tree_child(commit_node, "tree");
+	ASSERT_NOT_NULL(n);
+	ASSERT_EQ(n->type, T_TREE);
+	ASSERT_EQ(n->mode, T_DIR);
+
+	n = get_tree_child(commit_node, "hash");
+	ASSERT_NOT_NULL(n);
+	ASSERT_EQ(n->type, T_HASH);
+	ASSERT_EQ(n->mode, T_FILE);
+
+	n = get_tree_child(commit_node, "msg");
+	ASSERT_NOT_NULL(n);
+	ASSERT_EQ(n->type, T_MSG);
+	ASSERT_EQ(n->mode, T_FILE);
+
+	n = get_tree_child(commit_node, "parent");
+	ASSERT_NOT_NULL(n);
+	ASSERT_EQ(n->type, T_COMMIT);
+	ASSERT_EQ(n->mode, T_DIR);
+
+	return 0;
+}
+
+TEST(test_objects_hash_matches_name)
+{
+	struct inode *objects, *commit_node, *hash_node;
+	struct inode_ops *obj_ops, *commit_ops, *hash_ops;
+	git_object *obj;
+	char hex[GIT_OID_HEXSZ + 1];
+	char buf[128] = {0};
+	int fd;
+	ssize_t n;
+
+	objects = get_tree_node(OBJECTS);
+	obj_ops = get_inode_ops(T_OBJECTS);
+
+	if (git_revparse_single(&obj, repo, "HEAD"))
+		FAIL("git_revparse_single failed");
+	git_oid_tostr(hex, sizeof(hex), git_object_id(obj));
+	git_object_free(obj);
+
+	commit_node = obj_ops->lookup(repo, objects, hex);
+	ASSERT_NOT_NULL(commit_node);
+
+	commit_ops = get_inode_ops(T_COMMIT);
+	ASSERT_EQ(commit_ops->update(repo, commit_node), 0);
+
+	hash_node = get_tree_child(commit_node, "hash");
+	ASSERT_NOT_NULL(hash_node);
+
+	hash_ops = get_inode_ops(T_HASH);
+	fd = hash_ops->open(repo, hash_node);
+	ASSERT(fd >= 0);
+
+	lseek(fd, 0, SEEK_SET);
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+
+	ASSERT_EQ(n, 41);
+	buf[40] = '\0';  /* strip newline */
+	ASSERT_STR_EQ(buf, hex);
+
+	return 0;
+}
+
 /* --- Error path tests --- */
 
 TEST(test_get_inode_ops_out_of_range)
@@ -1138,6 +1311,11 @@ main(void)
 	RUN_TEST(test_lookup_remotes);
 	RUN_TEST(test_update_remote_branches);
 	RUN_TEST(test_lookup_remote_branches);
+	RUN_TEST(test_update_objects);
+	RUN_TEST(test_lookup_objects);
+	RUN_TEST(test_lookup_objects_invalid);
+	RUN_TEST(test_objects_commit_structure);
+	RUN_TEST(test_objects_hash_matches_name);
 	RUN_TEST(test_get_inode_ops_out_of_range);
 	RUN_TEST(test_lookup_tree_nonexistent);
 	RUN_TEST(test_lookup_commit_nonexistent);

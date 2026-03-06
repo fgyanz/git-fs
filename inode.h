@@ -34,6 +34,7 @@ enum {
 	T_TREE,
 	T_HASH,
 	T_MSG,
+	T_OBJECTS,
 	T_ALL
 };
 
