@@ -1,64 +1,120 @@
 # git-fs
 
-Mount a git repository as a read-only filesystem.
+Mount a git repository as a read-only FUSE filesystem.
 
 Browse branches, tags, and commits as directories using standard Unix
-tools — no checkouts, no working tree copies, no disk space wasted per
-branch. Useful for repositories with many branches (e.g. the Linux
-kernel), where scripts need to read files across branches without
-cloning or checking out each one.
-
-Unlike git worktrees, git-fs requires no extra disk space per branch.
-The entire repository is accessible through a single mountpoint.
-
-## Layout
-
-```
-mountpoint/
-  HEAD/
-    tree/          files at this revision
-    msg            commit message
-    hash           commit SHA
-    parent/        parent commit (same layout, recursive)
-  branches/
-    heads/         local branches as commit directories
-    remotes/
-      origin/      remote tracking branches
-  tags/            tags as commit directories
-```
-
-## Building
-
-Requires libfuse3, libgit2, and pkg-config.
-
-```
-make
-```
+tools. No checkouts, no working tree copies, no disk overhead per ref.
+The filesystem mirrors the repository — pushes, branch updates, and
+new tags appear immediately on the next access.
 
 ## Usage
 
 ```
-git-fs -r /path/to/repo -m /path/to/mountpoint
+git-fs -r /path/to/repo [-m /path/to/mountpoint]
 ```
 
-The mountpoint directory must exist. To unmount:
+If `-m` is omitted, the mountpoint defaults to `<repo>-fs` and is
+created automatically.
 
 ```
-fusermount3 -u /path/to/mountpoint
+$ git-fs -r /srv/linux.git
+git-fs: mounted at /srv/linux.git-fs
+
+$ ls /srv/linux.git-fs/
+HEAD/  branches/  objects/  tags/
+
+$ cat /srv/linux.git-fs/HEAD/hash
+a1b2c3d4e5f6...
+
+$ cat /srv/linux.git-fs/tags/v6.8/tree/Makefile
+# SPDX-License-Identifier: GPL-2.0
+VERSION = 6
+...
+
+$ diff /srv/linux.git-fs/branches/heads/master/tree/init/main.c \
+       /srv/linux.git-fs/tags/v6.7/tree/init/main.c
 ```
 
-### Passthrough mode
-
-git-fs uses FUSE passthrough to serve file reads directly from the
-kernel, bypassing userspace after open. This requires `CAP_SYS_ADMIN`:
+To unmount:
 
 ```
-make passthrough
+git-fs -u /srv/linux.git-fs
+```
+
+### Options
+
+```
+-r, --repository   path to a local git repository (required)
+-m, --mount        mountpoint path (default: <repo>-fs)
+-u, --unmount      unmount the filesystem at path
+-a, --allow-other  allow other users to access the mount
+-f, --foreground   run in the foreground
+-V, --version      print version
+-h, --help         print help
+```
+
+## Layout
+
+Each ref (branch, tag, or commit SHA) is a directory with the same
+structure. File sizes and mtimes reflect the actual commit — `ls -l`
+and `stat(1)` work as expected:
+
+```
+<ref>/
+  tree/     files at this revision
+  hash      commit SHA
+  msg       commit message
+  parent/   parent commit (same layout, recursive)
+```
+
+The full mountpoint:
+
+```
+mountpoint/
+  HEAD/                   current HEAD commit
+  branches/
+    heads/                local branches
+    remotes/
+      <remote>/           remote tracking branches
+  tags/                   tags
+  objects/                all commits by SHA
+```
+
+## Building
+
+Requires libfuse3, libgit2, and a C compiler.
+
+```
+make
+make install          # installs to /usr/local/bin
+```
+
+### FUSE passthrough
+
+When available, git-fs uses FUSE passthrough to serve file reads
+directly from the kernel page cache, bypassing userspace after open.
+This requires `CAP_SYS_ADMIN`:
+
+```
+make passthrough      # install + setcap cap_sys_admin+ep
+```
+
+Falls back to buffered reads automatically if unavailable.
+
+### Tests
+
+```
+make test
 ```
 
 ## Design
 
-- FUSE low-level API for direct request handling
-- Per-thread libgit2 handles via thread-local storage
-- File content served through memfd backed by FUSE passthrough
-- Read-only mount, no working tree modifications
+- FUSE low-level API — no libfuse high-level overhead.
+- Thread safe: Lock-free design with atomic operations.
+- Memory-mapped inode pool with batch reclaim via `madvise(2)`.
+- File content served through `memfd_create(2)` backed by FUSE passthrough.
+- Immutable git objects cached for 24h. Mutable refs refreshed on access.
+
+## License
+
+GPLv3
