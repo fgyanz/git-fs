@@ -6,10 +6,12 @@ BINDIR = $(PREFIX)/bin
 PKG_CFLAGS = $$(pkg-config --cflags fuse3 libgit2)
 PKG_LIBS   = $$(pkg-config --libs fuse3 libgit2)
 
-CC     = cc
-CFLAGS = -D_GNU_SOURCE -Wall -O2 $(PKG_CFLAGS)
-LDFLAGS =
-LIBS   = $(PKG_LIBS)
+CC      = cc
+CFLAGS  = -D_GNU_SOURCE -D_FORTIFY_SOURCE=2 -Wall -Wextra \
+          -Wno-unused-parameter \
+          -O2 -fPIE -fstack-protector-strong $(PKG_CFLAGS)
+LDFLAGS = -pie -Wl,-z,relro,-z,now
+LIBS    = $(PKG_LIBS)
 
 BIN  = git-fs
 OBJS = git-fs.o tree.o inode.o
@@ -28,7 +30,7 @@ $(BIN): $(OBJS)
 
 install: $(BIN)
 	install -d $(DESTDIR)$(BINDIR)
-	install -m 755 $(BIN) $(DESTDIR)$(BINDIR)/$(BIN)
+	install -s -m 755 $(BIN) $(DESTDIR)$(BINDIR)/$(BIN)
 
 passthrough: install
 	setcap cap_sys_admin+ep $(DESTDIR)$(BINDIR)/$(BIN)
@@ -44,10 +46,10 @@ test: $(TESTS) $(BIN)
 	./tests/test_mount.sh
 
 tests/test_tree: tests/test_tree.c tree.c inode.c inode.h tree.h
-	$(CC) $(CFLAGS) -o $@ tests/test_tree.c tree.c inode.c $(LIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tests/test_tree.c tree.c inode.c $(LIBS)
 
 tests/test_inode: tests/test_inode.c tree.c inode.c inode.h tree.h
-	$(CC) $(CFLAGS) -o $@ tests/test_inode.c tree.c inode.c $(LIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tests/test_inode.c tree.c inode.c $(LIBS)
 
 clean:
 	rm -f $(BIN) $(OBJS) $(TESTS)

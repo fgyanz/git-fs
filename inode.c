@@ -137,7 +137,7 @@ resolve_commit_obj(git_repository *repo, struct inode *n)
 static int
 update_commit(git_repository *repo, struct inode *dir)
 {
-	int i;
+	size_t i;
 	struct inode *n;
 	struct hardcoded_dentry *d;
 
@@ -171,7 +171,7 @@ update_commit(git_repository *repo, struct inode *dir)
 static struct inode *
 lookup_commit(git_repository *repo, struct inode *dir, const char *entry)
 {
-	int i;
+	size_t i;
 	struct hardcoded_dentry *d;
 	struct inode *n;
 
