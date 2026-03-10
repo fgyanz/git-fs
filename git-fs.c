@@ -642,10 +642,6 @@ main(int argc, char *argv[])
 	if (fuse_session_mount(se, conf.mnt) != 0)
 		goto err_out2;
 
-	fprintf(stderr, "git-fs: mounted at %s "
-	        "(unmount with: fusermount3 -u %s)\n",
-	        conf.mnt, conf.mnt);
-
 	fuse_daemonize(conf.foreground);
 
 	c = fuse_loop_cfg_create();
