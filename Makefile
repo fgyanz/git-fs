@@ -45,6 +45,9 @@ test: $(TESTS) $(BIN)
 	./tests/test_inode
 	./tests/test_mount.sh
 
+stress: $(BIN)
+	REPO=$(REPO) ./tests/test_stress.sh
+
 tests/test_tree: tests/test_tree.c tree.c inode.c inode.h tree.h
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tests/test_tree.c tree.c inode.c $(LIBS)
 
