@@ -449,53 +449,60 @@ lookup_tree(git_repository *repo, struct inode *dir, const char *entry)
 static int
 open_generic(git_repository *repo, struct inode *file)
 {
-	int fd;
+	int fd = -1;
+	int own_obj = 0;
 	const char *data = NULL;
 	char sha[GIT_HASH_SZ] = {0};
+	git_object *obj;
 
-	if (file->type == T_TREE && resolve_tree_obj(repo, file))
-		return -1;
+	/* blobs: look up a private copy to avoid racing concurrent opens. */
+	if (file->type == T_TREE) {
+		if (git_object_lookup(&obj, repo, &file->oid, GIT_OBJECT_ANY))
+			return -1;
+		own_obj = 1;
+	} else {
+		obj = aload(&file->obj);
+		if (!obj)
+			return -1;
+	}
 
 	fd = memfd_create(file->name, 0);
-	if (fd == -1) {
-		fprintf(stderr, "%s:memfd_create:%s\n",
-		        __func__, strerror(errno));
-		return -1;
-	}
+	if (fd == -1)
+		goto err;
 
 	switch (file->type) {
 	case T_TREE:
-		data = git_blob_rawcontent((git_blob *)file->obj);
+		data = git_blob_rawcontent((git_blob *)obj);
 		break;
 	case T_HASH:
-		git_oid_tostr(sha, sizeof(sha), git_object_id(file->obj));
+		git_oid_tostr(sha, sizeof(sha), git_object_id(obj));
 		sha[GIT_HASH_SZ - 1] = '\n';
 		data = sha;
 		break;
 	case T_MSG:
-		data = git_commit_message((git_commit *)file->obj);
+		data = git_commit_message((git_commit *)obj);
 		break;
 	}
 
-	if (!data) {
-		close(fd);
-		return -1;
-	}
+	if (!data)
+		goto err;
 
 	file->size = get_node_size(file);
 
-	if (write(fd, data, file->size) == -1) {
-		close(fd);
-		fprintf(stderr, "%s:write:%s\n",
-			__func__, strerror(errno));
-		return -1;
-	}
+	if (write(fd, data, file->size) != (ssize_t) file->size)
+		goto err;
 
-	/* content copied to memfd; drop the blob. re-loaded from OID if needed. */
-	if (file->type == T_TREE)
-		set_obj(file, NULL);
+	if (own_obj)
+		git_object_free(obj);
 
 	return fd;
+
+err:
+	if (fd != -1)
+		close(fd);
+	if (own_obj)
+		git_object_free(obj);
+	return -1;
 }
 
 static int

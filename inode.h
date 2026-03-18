@@ -8,9 +8,11 @@
 #define T_FILE          S_IFREG
 #define nlink(x)        ((x) == T_DIR ? 2 : 1)
 
-#define INODE_STATIC   (1u << 0)
-#define INODE_DELETED  (1u << 1)
-#define INODE_DETACHED (1u << 2)
+#define INODE_STATIC     (1u << 0)
+#define INODE_DELETED    (1u << 1)
+#define INODE_DETACHED   (1u << 2)
+#define INODE_READY      (1u << 3)
+#define INODE_POPULATING (1u << 4)
 
 // static inodes
 enum {
@@ -79,5 +81,6 @@ extern struct inode_ops *get_inode_ops(unsigned);
 #define afadd(p, v)    __atomic_fetch_add(p, v, __ATOMIC_ACQ_REL)
 #define afsub(p, v)    __atomic_fetch_sub(p, v, __ATOMIC_ACQ_REL)
 #define afor(p, v)     __atomic_fetch_or(p, v, __ATOMIC_RELEASE)
+#define afand(p, v)    __atomic_fetch_and(p, v, __ATOMIC_RELEASE)
 
 #endif

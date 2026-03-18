@@ -214,7 +214,7 @@ is_dead(struct inode *n)
 struct inode *
 add_tree_node(struct inode *p, const char *name, unsigned type, mode_t mode)
 {
-	struct inode *n, *head, *nx;
+	struct inode *n, *head, *nx, *dup;
 
 	n = get_tree_child(p, name);
 	if (n)
@@ -244,6 +244,13 @@ add_tree_node(struct inode *p, const char *name, unsigned type, mode_t mode)
 		nx = aload(&head->sibling);
 		astore(&n->sibling, nx);
 	} while (!acas(&head->sibling, &nx, n));
+
+	/* another thread may have inserted the same name; dedup */
+	dup = get_tree_child(p, name);
+	if (dup != n) {
+		afor(&n->flags, INODE_DELETED);
+		return dup;
+	}
 
 	return n;
 }

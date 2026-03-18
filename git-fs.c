@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdio.h>
 #include <sys/stat.h>
 #include <stdlib.h>
@@ -186,6 +187,16 @@ gitfs_destroy(void *priv)
 	git_libgit2_shutdown();
 }
 
+/* nodes under objects/ are addressed by SHA and never change. */
+static int
+under_objects(struct inode *n)
+{
+	for (; n->ino != ROOT; n = n->parent)
+		if (n->ino == OBJECTS)
+			return 1;
+	return 0;
+}
+
 static double
 cache_timeout(struct inode *n)
 {
@@ -193,6 +204,7 @@ cache_timeout(struct inode *n)
 	case T_TREE:
 	case T_HASH:
 	case T_MSG:
+		return under_objects(n) ? CACHE_IMMUTABLE : CACHE_REF;
 	case T_GENERIC:
 		return CACHE_IMMUTABLE;
 	default:
@@ -372,6 +384,39 @@ gitfs_forget_multi(fuse_req_t req, size_t count,
 	fuse_reply_none(req);
 }
 
+#define POPULATE_RETRIES 5000
+
+static int
+opendir_immutable(git_repository *repo, struct inode *n)
+{
+	/* spinlock over mutex: no per-inode init/destroy, just two
+	 * bits in existing flags; critical section is short. */
+	unsigned f;
+	int tries = POPULATE_RETRIES;
+
+	while (tries--) {
+		f = aload(&n->flags);
+		if (f & INODE_READY)
+			return 0;
+		if (f & INODE_POPULATING) {
+			sched_yield();
+			continue;
+		}
+		if (!acas(&n->flags, &f, f | INODE_POPULATING))
+			continue;
+
+		if (n->ops->update(repo, n)) {
+			afand(&n->flags, ~INODE_POPULATING);
+			return -1;
+		}
+
+		afor(&n->flags, INODE_READY);
+		return 0;
+	}
+
+	return -1;
+}
+
 static void
 gitfs_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 {
@@ -400,12 +445,18 @@ gitfs_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 	if (!n->ops->update)
 		goto out;
 
-	/* free old children, swap current list out, rebuild from git.
-	 * skip T_GENERIC dirs (ROOT, BRANCHES) whose children are static.
-	 * skip T_TREE dirs whose git object is immutable by OID. */
+	/* immutable: populate once */
+	if (n->type == T_TREE || under_objects(n)) {
+		if (opendir_immutable(repo, n)) {
+			free(dh);
+			fuse_reply_err(req, EIO);
+			return;
+		}
+		goto out;
+	}
+
+	/* mutable refs: retire and rebuild */
 	if (n->type != T_GENERIC) {
-		if (n->type == T_TREE && aload(&n->child))
-			goto out;
 		free_retired(axchg(&n->retired, NULL));
 		astore(&n->retired, axchg(&n->child, NULL));
 	}
