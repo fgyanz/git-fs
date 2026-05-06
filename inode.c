@@ -59,15 +59,16 @@ set_commit(struct inode *n, git_object *obj)
 struct hardcoded_dentry {
 	const char *name;
 	unsigned type;
-	unsigned parent;
 	mode_t mode;
 };
 
+/* the four virtual children every commit-like dir (T_COMMIT, T_HEAD)
+ * exposes.  */
 static struct hardcoded_dentry dentries[] = {
-	{"tree", T_TREE, T_COMMIT, T_DIR},
-	{"hash", T_HASH, T_COMMIT, T_FILE},
-	{"msg", T_MSG, T_COMMIT, T_FILE},
-	{"parent", T_COMMIT, T_COMMIT, T_DIR},
+	{"tree",   T_TREE,   T_DIR},
+	{"hash",   T_HASH,   T_FILE},
+	{"msg",    T_MSG,    T_FILE},
+	{"parent", T_COMMIT, T_DIR},
 };
 
 static inline int
@@ -171,8 +172,6 @@ update_commit(git_repository *repo, struct inode *dir)
 
 	for (i = 0; i < ARRAY_SIZE(dentries); i++) {
 		d = dentries + i;
-		if (d->parent != T_COMMIT)
-			continue;
 
 		/* root commits have no parent */
 		if (d->type == T_PARENT &&
@@ -200,8 +199,6 @@ lookup_commit(git_repository *repo, struct inode *dir, const char *entry)
 	d = NULL;
 	for (i = 0; i < ARRAY_SIZE(dentries); i++) {
 		d = dentries + i;
-		if (d->parent != T_COMMIT)
-			continue;
 		if (strcmp(d->name, entry) == 0)
 			break;
 		d = NULL;
@@ -528,7 +525,7 @@ err:
 }
 
 static int
-update_head(git_repository *repo, struct inode *n)
+__update_head(git_repository *repo, struct inode *n)
 {
 	git_object *obj, *commit;
 
@@ -544,6 +541,15 @@ update_head(git_repository *repo, struct inode *n)
 	set_commit(n, commit);
 
 	return 0;
+}
+
+static int
+update_head(git_repository *repo, struct inode *n)
+{
+	/* Refresh HEAD first */
+	if (__update_head(repo, n))
+		return 1;
+	return update_commit(repo, n);
 }
 
 static int
@@ -600,7 +606,7 @@ update_generic(git_repository *repo, struct inode *dir)
 
 	if (dir->ino == ROOT) {
 		n = get_tree_node(HEAD);
-		return update_head(repo, n);
+		return __update_head(repo, n);
 	}
 
 	return 0;
@@ -613,7 +619,7 @@ lookup_generic(git_repository *repo, struct inode *dir, const char *entry)
 
 	n = get_tree_child(dir, entry);
 
-	if (n && n->ino == HEAD && update_head(repo, n))
+	if (n && n->ino == HEAD && __update_head(repo, n))
 		return NULL;
 
 	return n;
@@ -655,6 +661,10 @@ struct inode_ops ops[T_ALL] =
 	{
 		.update = update_objects,
 		.lookup = lookup_objects,
+	},
+	{
+		.update = update_head,
+		.lookup = lookup_commit,
 	},
 };
 

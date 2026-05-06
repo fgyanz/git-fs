@@ -42,7 +42,7 @@ TEST(test_tree_init)
 	ASSERT_NOT_NULL(n);
 	ASSERT_STR_EQ(n->name, "HEAD");
 	ASSERT_EQ(n->parent->ino, ROOT);
-	ASSERT_EQ(n->type, T_COMMIT);
+	ASSERT_EQ(n->type, T_HEAD);
 
 	/* BRANCHES children: heads, remotes */
 	n = get_tree_node(HEADS);

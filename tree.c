@@ -50,7 +50,7 @@ static struct inode top[] = {
 		.ino = HEAD,
 		.parent_ino = ROOT,
 		.mode = T_DIR,
-		.type = T_COMMIT,
+		.type = T_HEAD,
 	},
 	{
 		.name = "remotes",

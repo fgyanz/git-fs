@@ -37,6 +37,7 @@ enum {
 	T_HASH,
 	T_MSG,
 	T_OBJECTS,
+	T_HEAD,
 	T_ALL
 };
 
