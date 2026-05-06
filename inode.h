@@ -73,6 +73,8 @@ struct inode {
 
 extern struct inode_ops *get_inode_ops(unsigned);
 
+extern void inode_release(struct inode *);
+
 #define aload(p)       __atomic_load_n(p, __ATOMIC_ACQUIRE)
 #define astore(p, v)   __atomic_store_n(p, v, __ATOMIC_RELEASE)
 #define axchg(p, v)    __atomic_exchange_n(p, v, __ATOMIC_ACQ_REL)

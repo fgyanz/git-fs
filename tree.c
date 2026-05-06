@@ -6,8 +6,6 @@
 #include <string.h>
 #include <sys/mman.h>
 
-#include <git2.h>
-
 #include "inode.h"
 #include "tree.h"
 
@@ -212,7 +210,8 @@ is_dead(struct inode *n)
 
 /* add a child to p. returns existing child if name already taken. */
 struct inode *
-add_tree_node(struct inode *p, const char *name, unsigned type, mode_t mode)
+add_tree_node(struct inode *p, const char *name, unsigned type, mode_t mode,
+              void (*init)(struct inode *, void *), void *arg)
 {
 	struct inode *n, *head, *nx, *dup;
 
@@ -229,6 +228,9 @@ add_tree_node(struct inode *p, const char *name, unsigned type, mode_t mode)
 	n->mode = mode;
 	n->parent = p;
 	n->type = type;
+
+	if (init)
+		init(n, arg);
 
 	/* first child: point to itself */
 	head = aload(&p->child);
@@ -353,20 +355,6 @@ tree_path(struct inode *node, char *opath, size_t size, struct inode **tree)
 	}
 }
 
-/* release name and git object. */
-static void
-clear_node(struct inode *n)
-{
-	struct git_object *obj;
-
-	free(n->name);
-	n->name = NULL;
-
-	obj = axchg(&n->obj, NULL);
-	if (obj)
-		git_object_free(obj);
-}
-
 /* the kernel looked up this node; bump its ref count. */
 void
 tree_ref(struct inode *n)
@@ -391,7 +379,7 @@ tree_forget(struct inode *n, unsigned long nlookup)
 		return;
 
 	afor(&n->flags, INODE_DELETED);
-	clear_node(n);
+	inode_release(n);
 
 	/* re-read: flags may have changed */
 	f = aload(&n->flags);
@@ -415,7 +403,7 @@ free_retired(struct inode *head)
 		if (c->flags & INODE_STATIC) {
 			/* never freed */
 		} else if (aload(&c->nlookup) == 0) {
-			clear_node(c);
+			inode_release(c);
 			push_free(c);
 		} else {
 			afor(&c->flags, INODE_DETACHED);
@@ -437,7 +425,7 @@ tree_destroy(void)
 	for (i = TOP_INODES; i < hwm; i++) {
 		if (aload(&free_next[i]))
 			continue;
-		clear_node(nodes + i);
+		inode_release(nodes + i);
 	}
 
 	munmap(nodes, nmax * sizeof(struct inode));

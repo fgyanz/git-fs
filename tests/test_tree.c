@@ -87,7 +87,7 @@ TEST(test_add_node)
 
 	parent = get_tree_node(TAGS);
 
-	child = add_tree_node(parent, "v1.0", T_COMMIT, T_DIR);
+	child = add_tree_node(parent, "v1.0", T_COMMIT, T_DIR, NULL, NULL);
 	ASSERT_NOT_NULL(child);
 	ASSERT_STR_EQ(child->name, "v1.0");
 	ASSERT_EQ(child->type, T_COMMIT);
@@ -106,10 +106,10 @@ TEST(test_add_duplicate)
 
 	parent = get_tree_node(TAGS);
 
-	first = add_tree_node(parent, "dup-test", T_COMMIT, T_DIR);
+	first = add_tree_node(parent, "dup-test", T_COMMIT, T_DIR, NULL, NULL);
 	ASSERT_NOT_NULL(first);
 
-	second = add_tree_node(parent, "dup-test", T_COMMIT, T_DIR);
+	second = add_tree_node(parent, "dup-test", T_COMMIT, T_DIR, NULL, NULL);
 	ASSERT_EQ((long)first, (long)second);
 
 	return 0;
@@ -168,9 +168,9 @@ TEST(test_count_children)
 	before = count_tree_children(parent);
 	ASSERT_EQ(before, 0);
 
-	add_tree_node(parent, "child1", T_GENERIC, T_DIR);
-	add_tree_node(parent, "child2", T_GENERIC, T_DIR);
-	add_tree_node(parent, "child3", T_GENERIC, T_DIR);
+	add_tree_node(parent, "child1", T_GENERIC, T_DIR, NULL, NULL);
+	add_tree_node(parent, "child2", T_GENERIC, T_DIR, NULL, NULL);
+	add_tree_node(parent, "child3", T_GENERIC, T_DIR, NULL, NULL);
 
 	after = count_tree_children(parent);
 	ASSERT_EQ(after, 3);
@@ -184,9 +184,9 @@ TEST(test_get_tree_sibling)
 
 	parent = get_tree_node(REMOTES);
 
-	a = add_tree_node(parent, "origin", T_BRANCHES, T_DIR);
-	add_tree_node(parent, "upstream", T_BRANCHES, T_DIR);
-	add_tree_node(parent, "fork", T_BRANCHES, T_DIR);
+	a = add_tree_node(parent, "origin", T_BRANCHES, T_DIR, NULL, NULL);
+	add_tree_node(parent, "upstream", T_BRANCHES, T_DIR, NULL, NULL);
+	add_tree_node(parent, "fork", T_BRANCHES, T_DIR, NULL, NULL);
 
 	/*
 	 * Circular list insertion: each new node is inserted after
@@ -216,10 +216,10 @@ TEST(test_circular_list_integrity)
 
 	parent = get_tree_node(HEADS);
 
-	add_tree_node(parent, "main", T_COMMIT, T_DIR);
-	add_tree_node(parent, "develop", T_COMMIT, T_DIR);
-	add_tree_node(parent, "feature-x", T_COMMIT, T_DIR);
-	add_tree_node(parent, "release-1", T_COMMIT, T_DIR);
+	add_tree_node(parent, "main", T_COMMIT, T_DIR, NULL, NULL);
+	add_tree_node(parent, "develop", T_COMMIT, T_DIR, NULL, NULL);
+	add_tree_node(parent, "feature-x", T_COMMIT, T_DIR, NULL, NULL);
+	add_tree_node(parent, "release-1", T_COMMIT, T_DIR, NULL, NULL);
 
 	/* Walk the circular list, should visit exactly 4 nodes */
 	n = parent->child;
@@ -247,9 +247,9 @@ TEST(test_tree_path)
 	/* Simulate a commit with nested tree:  tree/ -> dir_a/ -> file_b */
 	commit_node = get_tree_node(HEAD);
 
-	tree_node = add_tree_node(commit_node, "tree", T_TREE, T_DIR);
-	dir_a = add_tree_node(tree_node, "src", T_TREE, T_DIR);
-	file_b = add_tree_node(dir_a, "main.c", T_TREE, T_FILE);
+	tree_node = add_tree_node(commit_node, "tree", T_TREE, T_DIR, NULL, NULL);
+	dir_a = add_tree_node(tree_node, "src", T_TREE, T_DIR, NULL, NULL);
+	file_b = add_tree_node(dir_a, "main.c", T_TREE, T_FILE, NULL, NULL);
 
 	tree_path(file_b, path, sizeof(path), &tree_out);
 
@@ -273,11 +273,11 @@ TEST(test_get_tree_sibling_large)
 	int i, count;
 
 	parent = add_tree_node(get_tree_node(ROOT), "large-dir",
-	                       T_GENERIC, T_DIR);
+	                       T_GENERIC, T_DIR, NULL, NULL);
 
 	for (i = 0; i < 500; i++) {
 		snprintf(name, sizeof(name), "entry-%03d", i);
-		add_tree_node(parent, name, T_GENERIC, T_FILE);
+		add_tree_node(parent, name, T_GENERIC, T_FILE, NULL, NULL);
 	}
 
 	ASSERT_EQ(count_tree_children(parent), 500);
@@ -325,11 +325,11 @@ TEST(test_readdir_offset_no_duplicates)
 	int i, j, dup;
 
 	parent = add_tree_node(get_tree_node(ROOT), "nodup-dir",
-	                       T_GENERIC, T_DIR);
+	                       T_GENERIC, T_DIR, NULL, NULL);
 
 	for (i = 0; i < 200; i++) {
 		snprintf(name, sizeof(name), "file-%03d", i);
-		add_tree_node(parent, name, T_GENERIC, T_FILE);
+		add_tree_node(parent, name, T_GENERIC, T_FILE, NULL, NULL);
 	}
 
 	/*
@@ -366,9 +366,9 @@ TEST(test_deleted_skip)
 	struct inode *parent, *n;
 
 	parent = add_tree_node(get_tree_node(ROOT), "tomb-parent",
-	                       T_GENERIC, T_DIR);
-	n = add_tree_node(parent, "alive", T_GENERIC, T_FILE);
-	add_tree_node(parent, "dead", T_GENERIC, T_FILE);
+	                       T_GENERIC, T_DIR, NULL, NULL);
+	n = add_tree_node(parent, "alive", T_GENERIC, T_FILE, NULL, NULL);
+	add_tree_node(parent, "dead", T_GENERIC, T_FILE, NULL, NULL);
 
 	/* mark "dead" as deleted */
 	afor(&get_tree_child(parent, "dead")->flags,
@@ -389,8 +389,8 @@ TEST(test_ref_forget)
 	struct inode *parent, *n;
 
 	parent = add_tree_node(get_tree_node(ROOT), "ref-parent",
-	                       T_GENERIC, T_DIR);
-	n = add_tree_node(parent, "ref-child", T_GENERIC, T_FILE);
+	                       T_GENERIC, T_DIR, NULL, NULL);
+	n = add_tree_node(parent, "ref-child", T_GENERIC, T_FILE, NULL, NULL);
 
 	tree_ref(n);
 	tree_ref(n);
@@ -429,8 +429,8 @@ TEST(test_forget_detached)
 	unsigned long ino;
 
 	parent = add_tree_node(get_tree_node(ROOT), "orphan-parent",
-	                       T_GENERIC, T_DIR);
-	n = add_tree_node(parent, "orphan-child", T_GENERIC, T_FILE);
+	                       T_GENERIC, T_DIR, NULL, NULL);
+	n = add_tree_node(parent, "orphan-child", T_GENERIC, T_FILE, NULL, NULL);
 	ino = n->ino;
 
 	/* detach from parent list */
@@ -452,9 +452,9 @@ TEST(test_free_retired)
 	unsigned long ino1, ino2;
 
 	parent = add_tree_node(get_tree_node(ROOT), "retire-parent",
-	                       T_GENERIC, T_DIR);
-	add_tree_node(parent, "r1", T_GENERIC, T_FILE);
-	add_tree_node(parent, "r2", T_GENERIC, T_FILE);
+	                       T_GENERIC, T_DIR, NULL, NULL);
+	add_tree_node(parent, "r1", T_GENERIC, T_FILE, NULL, NULL);
+	add_tree_node(parent, "r2", T_GENERIC, T_FILE, NULL, NULL);
 
 	ino1 = get_tree_child(parent, "r1")->ino;
 	ino2 = get_tree_child(parent, "r2")->ino;
@@ -480,9 +480,9 @@ TEST(test_rebuild_preserves_live)
 	unsigned long live_ino;
 
 	parent = add_tree_node(get_tree_node(ROOT), "rebuild-parent",
-	                       T_GENERIC, T_DIR);
-	live = add_tree_node(parent, "live-node", T_GENERIC, T_FILE);
-	add_tree_node(parent, "dead-node", T_GENERIC, T_FILE);
+	                       T_GENERIC, T_DIR, NULL, NULL);
+	live = add_tree_node(parent, "live-node", T_GENERIC, T_FILE, NULL, NULL);
+	add_tree_node(parent, "dead-node", T_GENERIC, T_FILE, NULL, NULL);
 
 	/* kernel looked up live-node */
 	tree_ref(live);
@@ -512,12 +512,12 @@ TEST(test_pool_grow)
 	int i;
 
 	parent = add_tree_node(get_tree_node(ROOT), "grow-parent",
-	                       T_GENERIC, T_DIR);
+	                       T_GENERIC, T_DIR, NULL, NULL);
 
 	/* Allocate more nodes than initial batch to trigger growth */
 	for (i = 0; i < 5000; i++) {
 		snprintf(name, sizeof(name), "grow-%04d", i);
-		n = add_tree_node(parent, name, T_GENERIC, T_FILE);
+		n = add_tree_node(parent, name, T_GENERIC, T_FILE, NULL, NULL);
 		ASSERT_NOT_NULL(n);
 	}
 
@@ -531,10 +531,10 @@ TEST(test_deleted_in_sibling_walk)
 	struct inode *parent, *b;
 
 	parent = add_tree_node(get_tree_node(ROOT), "sib-walk",
-	                       T_GENERIC, T_DIR);
-	add_tree_node(parent, "sa", T_GENERIC, T_FILE);
-	b = add_tree_node(parent, "sb", T_GENERIC, T_FILE);
-	add_tree_node(parent, "sc", T_GENERIC, T_FILE);
+	                       T_GENERIC, T_DIR, NULL, NULL);
+	add_tree_node(parent, "sa", T_GENERIC, T_FILE, NULL, NULL);
+	b = add_tree_node(parent, "sb", T_GENERIC, T_FILE, NULL, NULL);
+	add_tree_node(parent, "sc", T_GENERIC, T_FILE, NULL, NULL);
 
 	/* delete middle node */
 	afor(&b->flags, INODE_DELETED);
@@ -554,8 +554,8 @@ TEST(test_rebuild_restore_on_failure)
 	struct inode *parent, *c;
 
 	parent = add_tree_node(get_tree_node(ROOT), "restore-parent",
-	                       T_GENERIC, T_DIR);
-	add_tree_node(parent, "keep-me", T_GENERIC, T_FILE);
+	                       T_GENERIC, T_DIR, NULL, NULL);
+	add_tree_node(parent, "keep-me", T_GENERIC, T_FILE, NULL, NULL);
 
 	ASSERT_EQ(count_tree_children(parent), 1);
 
@@ -580,12 +580,12 @@ TEST(test_free_retired_skips_static)
 
 	/* create a parent with one dynamic child and one flagged as static */
 	parent = add_tree_node(get_tree_node(ROOT), "skip-static",
-	                       T_GENERIC, T_DIR);
-	s = add_tree_node(parent, "fake-static", T_GENERIC, T_FILE);
+	                       T_GENERIC, T_DIR, NULL, NULL);
+	s = add_tree_node(parent, "fake-static", T_GENERIC, T_FILE, NULL, NULL);
 	s->flags |= INODE_STATIC;
 	s_ino = s->ino;
 
-	add_tree_node(parent, "dynamic", T_GENERIC, T_FILE);
+	add_tree_node(parent, "dynamic", T_GENERIC, T_FILE, NULL, NULL);
 
 	old = axchg(&parent->child, NULL);
 	free_retired(old);
@@ -644,11 +644,11 @@ TEST(test_cursor_walk_all_nodes)
 	int i, j, count;
 
 	parent = add_tree_node(get_tree_node(ROOT), "cursor-all",
-	                       T_GENERIC, T_DIR);
+	                       T_GENERIC, T_DIR, NULL, NULL);
 
 	for (i = 0; i < 200; i++) {
 		snprintf(name, sizeof(name), "c-%03d", i);
-		add_tree_node(parent, name, T_GENERIC, T_FILE);
+		add_tree_node(parent, name, T_GENERIC, T_FILE, NULL, NULL);
 	}
 
 	count = cursor_walk(parent, seen, 200);
@@ -670,10 +670,10 @@ TEST(test_cursor_walk_skip_dead)
 	int count;
 
 	parent = add_tree_node(get_tree_node(ROOT), "cursor-dead",
-	                       T_GENERIC, T_DIR);
-	add_tree_node(parent, "ca", T_GENERIC, T_FILE);
-	b = add_tree_node(parent, "cb", T_GENERIC, T_FILE);
-	add_tree_node(parent, "cc", T_GENERIC, T_FILE);
+	                       T_GENERIC, T_DIR, NULL, NULL);
+	add_tree_node(parent, "ca", T_GENERIC, T_FILE, NULL, NULL);
+	b = add_tree_node(parent, "cb", T_GENERIC, T_FILE, NULL, NULL);
+	add_tree_node(parent, "cc", T_GENERIC, T_FILE, NULL, NULL);
 
 	afor(&b->flags, INODE_DELETED);
 
@@ -693,7 +693,7 @@ TEST(test_cursor_walk_empty)
 	int count;
 
 	parent = add_tree_node(get_tree_node(ROOT), "cursor-empty",
-	                       T_GENERIC, T_DIR);
+	                       T_GENERIC, T_DIR, NULL, NULL);
 
 	count = cursor_walk(parent, seen, 1);
 	ASSERT_EQ(count, 0);
@@ -707,8 +707,8 @@ TEST(test_cursor_walk_single)
 	int count;
 
 	parent = add_tree_node(get_tree_node(ROOT), "cursor-single",
-	                       T_GENERIC, T_DIR);
-	only = add_tree_node(parent, "only-child", T_GENERIC, T_FILE);
+	                       T_GENERIC, T_DIR, NULL, NULL);
+	only = add_tree_node(parent, "only-child", T_GENERIC, T_FILE, NULL, NULL);
 
 	count = cursor_walk(parent, seen, 1);
 	ASSERT_EQ(count, 1);
@@ -723,12 +723,12 @@ TEST(test_cursor_walk_all_dead)
 	int count;
 
 	parent = add_tree_node(get_tree_node(ROOT), "cursor-alldead",
-	                       T_GENERIC, T_DIR);
-	afor(&add_tree_node(parent, "d1", T_GENERIC, T_FILE)->flags,
+	                       T_GENERIC, T_DIR, NULL, NULL);
+	afor(&add_tree_node(parent, "d1", T_GENERIC, T_FILE, NULL, NULL)->flags,
 	     INODE_DELETED);
-	afor(&add_tree_node(parent, "d2", T_GENERIC, T_FILE)->flags,
+	afor(&add_tree_node(parent, "d2", T_GENERIC, T_FILE, NULL, NULL)->flags,
 	     INODE_DELETED);
-	afor(&add_tree_node(parent, "d3", T_GENERIC, T_FILE)->flags,
+	afor(&add_tree_node(parent, "d3", T_GENERIC, T_FILE, NULL, NULL)->flags,
 	     INODE_DELETED);
 
 	count = cursor_walk(parent, seen, 1);
@@ -756,7 +756,7 @@ TEST(test_add_node_has_ops)
 	struct inode *parent, *child;
 
 	parent = get_tree_node(ROOT);
-	child = add_tree_node(parent, "test-ops", T_GENERIC, T_DIR);
+	child = add_tree_node(parent, "test-ops", T_GENERIC, T_DIR, NULL, NULL);
 	ASSERT_NOT_NULL(child);
 	ASSERT_NOT_NULL(child->ops);
 
@@ -779,7 +779,7 @@ TEST(test_tree_path_shallow)
 	 * to the node itself.
 	 */
 	parent = get_tree_node(HEAD);
-	tree_node = add_tree_node(parent, "shallow-tree", T_TREE, T_DIR);
+	tree_node = add_tree_node(parent, "shallow-tree", T_TREE, T_DIR, NULL, NULL);
 
 	tree_path(tree_node, path, sizeof(path), &tree_out);
 	ASSERT_EQ((long)tree_out, (long)tree_node);
@@ -793,14 +793,14 @@ TEST(test_count_children_after_dedup)
 	struct inode *parent;
 
 	parent = add_tree_node(get_tree_node(ROOT), "dedup-parent",
-	                       T_GENERIC, T_DIR);
+	                       T_GENERIC, T_DIR, NULL, NULL);
 
-	add_tree_node(parent, "x", T_GENERIC, T_DIR);
-	add_tree_node(parent, "y", T_GENERIC, T_DIR);
+	add_tree_node(parent, "x", T_GENERIC, T_DIR, NULL, NULL);
+	add_tree_node(parent, "y", T_GENERIC, T_DIR, NULL, NULL);
 
 	/* Adding duplicates should not increase count */
-	add_tree_node(parent, "x", T_GENERIC, T_DIR);
-	add_tree_node(parent, "y", T_GENERIC, T_DIR);
+	add_tree_node(parent, "x", T_GENERIC, T_DIR, NULL, NULL);
+	add_tree_node(parent, "y", T_GENERIC, T_DIR, NULL, NULL);
 	ASSERT_EQ(count_tree_children(parent), 2);
 
 	return 0;
