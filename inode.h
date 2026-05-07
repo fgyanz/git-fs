@@ -42,7 +42,6 @@ enum {
 };
 
 struct git_repository;
-struct git_object;
 struct inode;
 
 struct inode_ops {
@@ -68,7 +67,6 @@ struct inode {
 	struct inode *child;
 	struct inode *retired;
 	struct inode_ops *ops;
-	struct git_object *obj;
 	git_oid oid;
 	/* bumped by 1 every time inotify watcher rebuilds a
 	 * directory's children. */

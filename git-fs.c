@@ -109,7 +109,7 @@ get_gitfs_tls(void)
 	return tls;
 }
 
-static git_repository *
+git_repository *
 get_gitfs_repo(void)
 {
 	char *repo_path = conf.repo;

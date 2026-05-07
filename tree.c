@@ -355,6 +355,14 @@ tree_path(struct inode *node, char *opath, size_t size, struct inode **tree)
 	}
 }
 
+/* release name */
+static void
+clear_node(struct inode *n)
+{
+	free(n->name);
+	n->name = NULL;
+}
+
 /* the kernel looked up this node; bump its ref count. */
 void
 tree_ref(struct inode *n)
@@ -379,7 +387,7 @@ tree_forget(struct inode *n, unsigned long nlookup)
 		return;
 
 	afor(&n->flags, INODE_DELETED);
-	inode_release(n);
+	clear_node(n);
 
 	/* re-read: flags may have changed */
 	f = aload(&n->flags);
@@ -403,7 +411,7 @@ free_retired(struct inode *head)
 		if (c->flags & INODE_STATIC) {
 			/* never freed */
 		} else if (aload(&c->nlookup) == 0) {
-			inode_release(c);
+			clear_node(c);
 			push_free(c);
 		} else {
 			afor(&c->flags, INODE_DETACHED);
@@ -425,7 +433,7 @@ tree_destroy(void)
 	for (i = TOP_INODES; i < hwm; i++) {
 		if (aload(&free_next[i]))
 			continue;
-		inode_release(nodes + i);
+		clear_node(nodes + i);
 	}
 
 	munmap(nodes, nmax * sizeof(struct inode));

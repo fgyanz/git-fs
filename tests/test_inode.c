@@ -19,6 +19,13 @@ get_gitfs_odb(void)
 	return test_odb;
 }
 
+/* stub for inode.c's get_gitfs_repo() — returns the test repo */
+git_repository *
+get_gitfs_repo(void)
+{
+	return repo;
+}
+
 /* Declared in inode.c */
 extern struct inode_ops *get_inode_ops(unsigned);
 
@@ -107,7 +114,8 @@ cleanup_test_repo(const char *path)
 }
 
 /*
- * Helper: get a commit inode for HEAD, with obj populated.
+ * Helper: get the HEAD inode with its oid and mtime populated, mirroring
+ * what update_head does at mount time.
  */
 static struct inode *
 head_commit_inode(void)
@@ -128,9 +136,25 @@ head_commit_inode(void)
 	}
 
 	git_object_free(obj);
-	n->obj = commit;
+	git_oid_cpy(&n->oid, git_object_id(commit));
+	n->mtime = git_commit_time((git_commit *) commit);
+	git_object_free(commit);
 
 	return n;
+}
+
+/* Look up a commit by oid and return its commit_time, or 0 on error. */
+static git_time_t
+commit_time_by_oid(const git_oid *oid)
+{
+	git_commit *c;
+	git_time_t t;
+
+	if (git_commit_lookup(&c, repo, oid))
+		return 0;
+	t = git_commit_time(c);
+	git_commit_free(c);
+	return t;
 }
 
 /* --- Tree structure tests (branches, tags, remotes) --- */
@@ -172,7 +196,7 @@ TEST(test_lookup_branches)
 	n = ops->lookup(repo, heads, "feature");
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->type, T_COMMIT);
-	ASSERT_NOT_NULL(n->obj);
+	ASSERT(n->mtime > 0);
 
 	/* Non-existent branch */
 	n = ops->lookup(repo, heads, "no-such-branch");
@@ -211,7 +235,7 @@ TEST(test_lookup_tags)
 	n = ops->lookup(repo, tags, "v1.0");
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->type, T_COMMIT);
-	ASSERT_NOT_NULL(n->obj);
+	ASSERT(n->mtime > 0);
 
 	n = ops->lookup(repo, tags, "no-such-tag");
 	ASSERT_NULL(n);
@@ -335,7 +359,7 @@ TEST(test_root_commit_parent)
 	ASSERT_EQ(ops->update(repo, head), 0);
 	parent_node = get_tree_child(head, "parent");
 	ASSERT_NOT_NULL(parent_node);
-	ASSERT_NOT_NULL(parent_node->obj);
+	ASSERT(parent_node->mtime > 0);
 
 	/*
 	 * The root commit has no parent. update_commit on the root
@@ -363,25 +387,21 @@ TEST(test_update_tree)
 
 	tree_node = get_tree_child(head, "tree");
 	ASSERT_NOT_NULL(tree_node);
-	ASSERT_NOT_NULL(tree_node->obj);
 
 	tree_ops = get_inode_ops(T_TREE);
 	ASSERT_EQ(tree_ops->update(repo, tree_node), 0);
 
-	/* Should contain file.txt and file2.txt with sizes set.
-	 * obj must be NULL: size comes from git_odb_read_header,
-	 * not from loading the blob into memory. */
+	/* Should contain file.txt and file2.txt with sizes set. Size
+	 * comes from git_odb_read_header, not from loading the blob. */
 	n = get_tree_child(tree_node, "file.txt");
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->mode, T_FILE);
 	ASSERT(n->size > 0);
-	ASSERT_NULL(n->obj);
 
 	n = get_tree_child(tree_node, "file2.txt");
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->mode, T_FILE);
 	ASSERT(n->size > 0);
-	ASSERT_NULL(n->obj);
 
 	return 0;
 }
@@ -636,7 +656,7 @@ TEST(test_lookup_remote_branches)
 	n = branch_ops->lookup(repo, origin, "feature");
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->type, T_COMMIT);
-	ASSERT_NOT_NULL(n->obj);
+	ASSERT(n->mtime > 0);
 
 	n = branch_ops->lookup(repo, origin, "no-such-branch");
 	ASSERT_NULL(n);
@@ -665,13 +685,11 @@ TEST(test_update_objects)
 	/* Test repo has 2 commits (first + second) */
 	ASSERT(count >= 2);
 
-	/* All children should be T_COMMIT directories with hex names.
-	 * obj is NOT loaded — only OID is stored (lazy resolve). */
+	/* All children should be T_COMMIT directories with hex names. */
 	n = objects->child;
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->type, T_COMMIT);
 	ASSERT_EQ(n->mode, T_DIR);
-	ASSERT_NULL(n->obj);
 	ASSERT_EQ(strlen(n->name), 40);
 
 	return 0;
@@ -697,7 +715,6 @@ TEST(test_lookup_objects)
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->type, T_COMMIT);
 	ASSERT_EQ(n->mode, T_DIR);
-	ASSERT_NOT_NULL(n->obj);
 	ASSERT(n->mtime > 0);
 	ASSERT_STR_EQ(n->name, hex);
 
@@ -950,9 +967,7 @@ TEST(test_mtime_head)
 	ASSERT_NOT_NULL(ops->update);
 	ASSERT_EQ(ops->update(repo, head), 0);
 
-	ASSERT_NOT_NULL(head->obj);
-
-	expected = git_commit_time((git_commit *)head->obj);
+	expected = commit_time_by_oid(&head->oid);
 	ASSERT(expected > 0);
 	ASSERT_EQ(head->mtime, expected);
 
@@ -966,7 +981,6 @@ TEST(test_mtime_commit_children)
 
 	head = head_commit_inode();
 	ASSERT_NOT_NULL(head);
-	head->mtime = git_commit_time((git_commit *)head->obj);
 
 	ops = get_inode_ops(T_COMMIT);
 	ASSERT_EQ(ops->update(repo, head), 0);
@@ -995,17 +1009,15 @@ TEST(test_mtime_parent_own_time)
 
 	head = head_commit_inode();
 	ASSERT_NOT_NULL(head);
-	head->mtime = git_commit_time((git_commit *)head->obj);
 
 	ops = get_inode_ops(T_COMMIT);
 	ASSERT_EQ(ops->update(repo, head), 0);
 
 	parent = get_tree_child(head, "parent");
 	ASSERT_NOT_NULL(parent);
-	ASSERT_NOT_NULL(parent->obj);
 
 	/* parent commit gets its own git_commit_time, not HEAD's */
-	parent_time = git_commit_time((git_commit *)parent->obj);
+	parent_time = commit_time_by_oid(&parent->oid);
 	ASSERT(parent_time > 0);
 	ASSERT_EQ(parent->mtime, parent_time);
 
@@ -1025,9 +1037,8 @@ TEST(test_mtime_branches)
 
 	n = get_tree_child(heads, "feature");
 	ASSERT_NOT_NULL(n);
-	ASSERT_NOT_NULL(n->obj);
 	ASSERT(n->mtime > 0);
-	ASSERT_EQ(n->mtime, git_commit_time((git_commit *)n->obj));
+	ASSERT_EQ(n->mtime, commit_time_by_oid(&n->oid));
 
 	return 0;
 }
@@ -1043,7 +1054,7 @@ TEST(test_mtime_lookup_branches)
 	n = ops->lookup(repo, heads, "feature");
 	ASSERT_NOT_NULL(n);
 	ASSERT(n->mtime > 0);
-	ASSERT_EQ(n->mtime, git_commit_time((git_commit *)n->obj));
+	ASSERT_EQ(n->mtime, commit_time_by_oid(&n->oid));
 
 	return 0;
 }
@@ -1061,9 +1072,8 @@ TEST(test_mtime_tags)
 
 	n = get_tree_child(tags, "v1.0");
 	ASSERT_NOT_NULL(n);
-	ASSERT_NOT_NULL(n->obj);
 	ASSERT(n->mtime > 0);
-	ASSERT_EQ(n->mtime, git_commit_time((git_commit *)n->obj));
+	ASSERT_EQ(n->mtime, commit_time_by_oid(&n->oid));
 
 	return 0;
 }
@@ -1079,7 +1089,7 @@ TEST(test_mtime_lookup_tags)
 	n = ops->lookup(repo, tags, "v1.0");
 	ASSERT_NOT_NULL(n);
 	ASSERT(n->mtime > 0);
-	ASSERT_EQ(n->mtime, git_commit_time((git_commit *)n->obj));
+	ASSERT_EQ(n->mtime, commit_time_by_oid(&n->oid));
 
 	return 0;
 }
@@ -1091,7 +1101,6 @@ TEST(test_mtime_tree_propagation)
 
 	head = head_commit_inode();
 	ASSERT_NOT_NULL(head);
-	head->mtime = git_commit_time((git_commit *)head->obj);
 
 	commit_ops = get_inode_ops(T_COMMIT);
 	ASSERT_EQ(commit_ops->update(repo, head), 0);
@@ -1122,7 +1131,6 @@ TEST(test_mtime_tree_lookup)
 
 	head = head_commit_inode();
 	ASSERT_NOT_NULL(head);
-	head->mtime = git_commit_time((git_commit *)head->obj);
 
 	commit_ops = get_inode_ops(T_COMMIT);
 	ASSERT_EQ(commit_ops->update(repo, head), 0);
@@ -1182,7 +1190,7 @@ TEST(test_mtime_remote_branches)
 	n = origin->child;
 	ASSERT_NOT_NULL(n);
 	ASSERT(n->mtime > 0);
-	ASSERT_EQ(n->mtime, git_commit_time((git_commit *)n->obj));
+	ASSERT_EQ(n->mtime, commit_time_by_oid(&n->oid));
 
 	return 0;
 }
@@ -1204,23 +1212,16 @@ TEST(test_lookup_tree_lazy_obj)
 
 	tree_ops = get_inode_ops(T_TREE);
 
-	/*
-	 * After lookup_tree, the blob object should NOT be loaded.
-	 * It was eagerly loaded before; now it's deferred to open().
-	 * Size is still set via git_odb_read_header (no full load).
-	 */
+	/* lookup_tree sets size from git_odb_read_header without loading
+	 * the blob; the blob is fetched fresh by open. */
 	n = tree_ops->lookup(repo, tree_node, "file2.txt");
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->mode, T_FILE);
 	ASSERT(n->size > 0);
-	ASSERT_NULL(n->obj);
 
-	/* open should still work (it resolves the object lazily) */
 	ASSERT_NOT_NULL(tree_ops->open);
 	fd = tree_ops->open(repo, n);
 	ASSERT(fd >= 0);
-	/* blob dropped after write; re-loaded on next open */
-	ASSERT_NULL(n->obj);
 	close(fd);
 
 	return 0;
