@@ -128,7 +128,7 @@ try_reclaim(unsigned bi)
 	astore(&batch_nfree[bi], TREE_BATCH);
 }
 
-/* wipe the node and put it back on the free list. */
+/* wipe the node and put it back on the free list */
 static void
 push_free(struct inode *n)
 {
@@ -136,6 +136,7 @@ push_free(struct inode *n)
 	unsigned bi = ino / TREE_BATCH;
 	unsigned old;
 
+	free(n->name);
 	memset(n, 0, sizeof(*n));
 	n->ino = ino;
 
@@ -355,13 +356,6 @@ tree_path(struct inode *node, char *opath, size_t size, struct inode **tree)
 	}
 }
 
-/* release name */
-static void
-clear_node(struct inode *n)
-{
-	free(n->name);
-	n->name = NULL;
-}
 
 /* the kernel looked up this node; bump its ref count. */
 void
@@ -370,8 +364,8 @@ tree_ref(struct inode *n)
 	afadd(&n->nlookup, 1);
 }
 
-/* the kernel is done with this node. when refs hit zero, delete it.
- * if already detached from its parent, reclaim the slot too. */
+/* the kernel is done with this node. when refs hit zero on a node
+ * that's already detached from its parent reclaim the slot. */
 void
 tree_forget(struct inode *n, unsigned long nlookup)
 {
@@ -386,10 +380,6 @@ tree_forget(struct inode *n, unsigned long nlookup)
 	if (old > nlookup)
 		return;
 
-	afor(&n->flags, INODE_DELETED);
-	clear_node(n);
-
-	/* re-read: flags may have changed */
 	f = aload(&n->flags);
 	if (f & INODE_DETACHED)
 		push_free(n);
@@ -411,7 +401,6 @@ free_retired(struct inode *head)
 		if (c->flags & INODE_STATIC) {
 			/* never freed */
 		} else if (aload(&c->nlookup) == 0) {
-			clear_node(c);
 			push_free(c);
 		} else {
 			afor(&c->flags, INODE_DETACHED);
@@ -433,7 +422,7 @@ tree_destroy(void)
 	for (i = TOP_INODES; i < hwm; i++) {
 		if (aload(&free_next[i]))
 			continue;
-		clear_node(nodes + i);
+		free(nodes[i].name);
 	}
 
 	munmap(nodes, nmax * sizeof(struct inode));

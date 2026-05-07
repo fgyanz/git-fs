@@ -384,9 +384,9 @@ TEST(test_deleted_skip)
 	return 0;
 }
 
-TEST(test_ref_forget)
+TEST(test_ref_forget_keeps_cache)
 {
-	struct inode *parent, *n;
+	struct inode *parent, *n, *cached;
 
 	parent = add_tree_node(get_tree_node(ROOT), "ref-parent",
 	                       T_GENERIC, T_DIR, NULL, NULL);
@@ -398,12 +398,40 @@ TEST(test_ref_forget)
 
 	tree_forget(n, 1);
 	ASSERT_EQ(n->nlookup, 1);
-	/* Still alive */
 	ASSERT_NOT_NULL(get_tree_child(parent, "ref-child"));
 
 	tree_forget(n, 1);
-	/* Now deleted */
-	ASSERT_NULL(get_tree_child(parent, "ref-child"));
+	ASSERT_EQ(n->nlookup, 0);
+
+	/* Live-ring node with nlookup==0 stays as cache entry: freeing
+	 * c->name eagerly here would race a concurrent get_tree_child
+	 * mid-strcmp. Re-lookup must hit the same inode and find a
+	 * still-valid name. */
+	cached = get_tree_child(parent, "ref-child");
+	ASSERT_EQ((long)cached, (long)n);
+	ASSERT_STR_EQ(cached->name, "ref-child");
+
+	return 0;
+}
+
+TEST(test_forget_preserves_name_on_live_ring)
+{
+	struct inode *parent, *n;
+
+	parent = add_tree_node(get_tree_node(ROOT), "name-stable",
+	                       T_GENERIC, T_DIR, NULL, NULL);
+	n = add_tree_node(parent, "stable-name", T_GENERIC, T_FILE, NULL, NULL);
+
+	tree_ref(n);
+	tree_forget(n, 1);  /* nlookup → 0, node still in live ring */
+
+	/* The bug we're guarding: clear_node-on-forget freed n->name and
+	 * set it to NULL. A concurrent get_tree_child that had already
+	 * passed the is_dead check would then strcmp(NULL, ...) → strlen(NULL)
+	 * → segfault. Live-ring nodes must keep their name until the slot
+	 * is actually reclaimed via push_free (DETACHED + nlookup==0). */
+	ASSERT_NOT_NULL(n->name);
+	ASSERT_STR_EQ(n->name, "stable-name");
 
 	return 0;
 }
@@ -852,7 +880,8 @@ main(void)
 
 	/* Memory management tests */
 	RUN_TEST(test_deleted_skip);
-	RUN_TEST(test_ref_forget);
+	RUN_TEST(test_ref_forget_keeps_cache);
+	RUN_TEST(test_forget_preserves_name_on_live_ring);
 	RUN_TEST(test_forget_static);
 	RUN_TEST(test_forget_detached);
 	RUN_TEST(test_free_retired);
