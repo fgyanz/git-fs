@@ -9,7 +9,7 @@
 #include "inode.h"
 #include "tree.h"
 
-#define TREE_MAX         (1 << 20)
+#define TREE_MAX         (1 << 25)
 #define TREE_BATCH       4096
 #define MAX_TREE_DEPTH   200
 
