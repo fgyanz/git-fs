@@ -61,6 +61,19 @@ assert_fail() {
 	fi
 }
 
+# poll up to ~1s for a substring to appear in `ls $1`
+wait_for_entry() {
+	dir="$1"
+	want="$2"
+	for _ in 1 2 3 4 5 6 7 8 9 10; do
+		if ls "$dir" 2>/dev/null | grep -q "$want"; then
+			return 0
+		fi
+		sleep 0.1
+	done
+	return 1
+}
+
 # Create test repo
 REPO=$(mktemp -d /tmp/git-fs-test-repo-XXXXXX)
 MNT=$(mktemp -d /tmp/git-fs-test-mnt-XXXXXX)
@@ -319,7 +332,7 @@ assert_eq "$REMOTE_HASH" "$HEAD_HASH" "remote_branch_matches_HEAD"
 cd "$REPO"
 git branch newbranch
 cd - > /dev/null
-sleep 1.5
+wait_for_entry "$MNT/branches/heads/" "newbranch" || true
 NEW_BR_LS=$(ls "$MNT/branches/heads/")
 assert_contains "$NEW_BR_LS" "newbranch" "ref_refresh_new_branch"
 
@@ -327,7 +340,7 @@ assert_contains "$NEW_BR_LS" "newbranch" "ref_refresh_new_branch"
 cd "$REPO"
 git tag v2.0
 cd - > /dev/null
-sleep 1.5
+wait_for_entry "$MNT/tags/" "v2.0" || true
 NEW_TAG_LS=$(ls "$MNT/tags/")
 assert_contains "$NEW_TAG_LS" "v2.0" "ref_refresh_new_tag"
 
@@ -460,8 +473,11 @@ echo "new" > newfile.txt
 git add newfile.txt
 git commit -q -m "post-mount commit"
 cd - > /dev/null
-sleep 1.5
-NEW_HEAD=$(cat "$MNT/HEAD/hash")
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+	NEW_HEAD=$(cat "$MNT/HEAD/hash")
+	[ "$OLD_HEAD" != "$NEW_HEAD" ] && break
+	sleep 0.1
+done
 if [ "$OLD_HEAD" != "$NEW_HEAD" ]; then
 	PASS=$((PASS + 1))
 	printf "  %-40s  ok\n" "head_refresh_after_commit"

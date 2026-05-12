@@ -14,16 +14,17 @@ LDFLAGS = -pie -Wl,-z,relro,-z,now
 LIBS    = $(PKG_LIBS)
 
 BIN  = git-fs
-OBJS = git-fs.o tree.o inode.o
+OBJS = git-fs.o tree.o inode.o inotify.o
 
 all: $(BIN)
 
 .c.o:
 	$(CC) $(CFLAGS) -c $<
 
-git-fs.o: git-fs.c inode.h tree.h
-tree.o:   tree.c inode.h tree.h
-inode.o:  inode.c inode.h tree.h
+git-fs.o:  git-fs.c inode.h tree.h inotify.h
+tree.o:    tree.c inode.h tree.h
+inode.o:   inode.c inode.h tree.h
+inotify.o: inotify.c inode.h tree.h inotify.h
 
 $(BIN): $(OBJS)
 	$(CC) $(LDFLAGS) -o $(BIN) $(OBJS) $(LIBS)

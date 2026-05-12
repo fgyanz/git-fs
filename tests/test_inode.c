@@ -902,26 +902,6 @@ TEST(test_root_commit_no_parent_entry)
 	return 0;
 }
 
-TEST(test_update_generic)
-{
-	struct inode *root, *head;
-	struct inode_ops *ops;
-
-	root = get_tree_node(ROOT);
-	ASSERT_NOT_NULL(root);
-
-	ops = get_inode_ops(T_GENERIC);
-	ASSERT_NOT_NULL(ops);
-	ASSERT_EQ(ops->update(repo, root), 0);
-
-	/* update_generic on ROOT should populate HEAD's obj */
-	head = get_tree_node(HEAD);
-	ASSERT_NOT_NULL(head);
-	ASSERT_NOT_NULL(head->obj);
-
-	return 0;
-}
-
 TEST(test_lookup_generic)
 {
 	struct inode *root, *n;
@@ -930,7 +910,10 @@ TEST(test_lookup_generic)
 	root = get_tree_node(ROOT);
 	ops = get_inode_ops(T_GENERIC);
 
-	/* should find static children */
+	/* T_GENERIC has no update — children are static and the
+	 * watcher pushes invalidation for everything mutable. */
+	ASSERT_NULL(ops->update);
+
 	n = ops->lookup(repo, root, "branches");
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->ino, BRANCHES);
@@ -939,13 +922,12 @@ TEST(test_lookup_generic)
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->ino, TAGS);
 
-	/* HEAD lookup should also populate its obj */
+	/* HEAD lookup just returns the inode — its obj is populated
+	 * by populate_refs at mount, not by lookup. */
 	n = ops->lookup(repo, root, "HEAD");
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->ino, HEAD);
-	ASSERT_NOT_NULL(n->obj);
 
-	/* non-existent */
 	n = ops->lookup(repo, root, "nope");
 	ASSERT_NULL(n);
 
@@ -956,18 +938,18 @@ TEST(test_lookup_generic)
 
 TEST(test_mtime_head)
 {
-	struct inode *root, *head;
+	struct inode *head;
 	struct inode_ops *ops;
 	git_time_t expected;
 
-	root = get_tree_node(ROOT);
-	ASSERT_NOT_NULL(root);
-
-	ops = get_inode_ops(T_GENERIC);
-	ASSERT_EQ(ops->update(repo, root), 0);
-
 	head = get_tree_node(HEAD);
 	ASSERT_NOT_NULL(head);
+
+	ops = get_inode_ops(T_HEAD);
+	ASSERT_NOT_NULL(ops);
+	ASSERT_NOT_NULL(ops->update);
+	ASSERT_EQ(ops->update(repo, head), 0);
+
 	ASSERT_NOT_NULL(head->obj);
 
 	expected = git_commit_time((git_commit *)head->obj);
@@ -1321,7 +1303,6 @@ main(void)
 	RUN_TEST(test_lookup_commit_nonexistent);
 	RUN_TEST(test_root_commit_no_parent_entry);
 	RUN_TEST(test_node_size_directory);
-	RUN_TEST(test_update_generic);
 	RUN_TEST(test_lookup_generic);
 	RUN_TEST(test_mtime_head);
 	RUN_TEST(test_mtime_commit_children);

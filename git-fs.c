@@ -14,6 +14,7 @@
 #include <git2.h>
 
 #include "inode.h"
+#include "inotify.h"
 #include "tree.h"
 
 #define GITFS_VERSION    "0.1"
@@ -21,10 +22,8 @@
 #define FUSE_CLONE_FD    1
 #define GITFS_PERM       0550
 
-/* immutable git objects (trees, blobs) can be cached long */
+/* kernel caching of immutable inodes metadata */
 #define CACHE_IMMUTABLE  86400.0
-/* mutable refs (branches, tags, HEAD pointer) need short timeouts */
-#define CACHE_REF        1.0
 
 struct gitfs_conf {
 	char *mnt;
@@ -45,6 +44,7 @@ struct gitfs_fh {
 struct gitfs_dh {
 	struct inode *cursor;
 	struct inode *head;
+	unsigned rebuild_seq;
 };
 
 struct gitfs_tls {
@@ -90,6 +90,7 @@ static struct fuse_opt gitfs_opts[] = {
 
 static pthread_key_t gitfs_tls_key;
 static struct gitfs_conf conf;
+static struct fuse_session *se;
 
 struct gitfs_tls *
 get_gitfs_tls(void)
@@ -162,6 +163,8 @@ thread_cleanup(void *priv)
 static void
 gitfs_init(void *priv, struct fuse_conn_info *conn)
 {
+	git_repository *repo;
+
 	git_libgit2_init();
 	git_libgit2_opts(GIT_OPT_SET_CACHE_MAX_SIZE, GIT_CACHE_MAX);
 
@@ -178,39 +181,36 @@ gitfs_init(void *priv, struct fuse_conn_info *conn)
 	}
 
 	pthread_key_create(&gitfs_tls_key, thread_cleanup);
+
+	repo = get_gitfs_repo();
+	if (!repo) {
+		fprintf(stderr, "git-fs: failed to open repository\n");
+		exit(EXIT_FAILURE);
+	}
+
+	if (inotify_subscribe(se, git_repository_path(repo))) {
+		fprintf(stderr, "git-fs: inotify setup failed: %s\n",
+		        strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+	if (update_refs(repo)) {
+		fprintf(stderr, "git-fs: failed to update refs\n");
+		exit(EXIT_FAILURE);
+	}
+	if (inotify_run()) {
+		fprintf(stderr, "git-fs: failed to start watcher thread\n");
+		exit(EXIT_FAILURE);
+	}
 }
 
 static void
 gitfs_destroy(void *priv)
 {
+	inotify_stop();
 	tree_destroy();
 	git_libgit2_shutdown();
 }
 
-/* nodes under objects/ are addressed by SHA and never change. */
-static int
-under_objects(struct inode *n)
-{
-	for (; n->ino != ROOT; n = n->parent)
-		if (n->ino == OBJECTS)
-			return 1;
-	return 0;
-}
-
-static double
-cache_timeout(struct inode *n)
-{
-	switch (n->type) {
-	case T_TREE:
-	case T_HASH:
-	case T_MSG:
-		return under_objects(n) ? CACHE_IMMUTABLE : CACHE_REF;
-	case T_GENERIC:
-		return CACHE_IMMUTABLE;
-	default:
-		return CACHE_REF;
-	}
-}
 
 static void
 fill_stat(struct stat *st, struct inode *n)
@@ -231,12 +231,10 @@ fill_stat(struct stat *st, struct inode *n)
 static void
 fill_entry(struct fuse_entry_param *e, struct inode *n)
 {
-	double timeout = cache_timeout(n);
-
 	memset(e, 0, sizeof(*e));
 	e->ino = n->ino;
-	e->entry_timeout = timeout;
-	e->attr_timeout = timeout;
+	e->entry_timeout = CACHE_IMMUTABLE;
+	e->attr_timeout = CACHE_IMMUTABLE;
 	fill_stat(&e->attr, n);
 }
 
@@ -285,7 +283,7 @@ gitfs_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 	memset(&st, 0, sizeof(st));
 	fill_stat(&st, n);
 
-	fuse_reply_attr(req, &st, cache_timeout(n));
+	fuse_reply_attr(req, &st, CACHE_IMMUTABLE);
 }
 
 static void
@@ -323,6 +321,12 @@ gitfs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size,
 			dh->cursor = dh->head;
 			break;
 		default:
+			/* watcher rebuilt the parent's children under us.
+			 * Abort */
+			if (aload(&p->rebuild_seq) != dh->rebuild_seq) {
+				n = NULL;
+				goto out;
+			}
 			n = dh->cursor;
 			if (!n)
 				goto out;
@@ -384,37 +388,24 @@ gitfs_forget_multi(fuse_req_t req, size_t count,
 	fuse_reply_none(req);
 }
 
-#define POPULATE_RETRIES 5000
-
 static int
 opendir_immutable(git_repository *repo, struct inode *n)
 {
-	/* spinlock over mutex: no per-inode init/destroy, just two
-	 * bits in existing flags; critical section is short. */
-	unsigned f;
-	int tries = POPULATE_RETRIES;
-
-	while (tries--) {
-		f = aload(&n->flags);
-		if (f & INODE_READY)
-			return 0;
-		if (f & INODE_POPULATING) {
-			sched_yield();
-			continue;
-		}
-		if (!acas(&n->flags, &f, f | INODE_POPULATING))
-			continue;
-
-		if (n->ops->update(repo, n)) {
-			afand(&n->flags, ~INODE_POPULATING);
-			return -1;
-		}
-
-		afor(&n->flags, INODE_READY);
+	if (aload(&n->flags) & INODE_READY)
+		return 0;
+	if (inode_acquire(n))
+		return -1;
+	if (aload(&n->flags) & INODE_READY) {
+		afand(&n->flags, ~INODE_POPULATING);
 		return 0;
 	}
-
-	return -1;
+	if (n->ops->update(repo, n)) {
+		afand(&n->flags, ~INODE_POPULATING);
+		return -1;
+	}
+	afor(&n->flags, INODE_READY);
+	afand(&n->flags, ~INODE_POPULATING);
+	return 0;
 }
 
 static void
@@ -442,35 +433,19 @@ gitfs_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 		return;
 	}
 
-	if (!n->ops->update)
-		goto out;
-
-	/* immutable: populate once */
-	if (n->type == T_TREE || under_objects(n)) {
+	if (is_inode_immutable(n)) {
 		if (opendir_immutable(repo, n)) {
 			free(dh);
 			fuse_reply_err(req, EIO);
 			return;
 		}
-		goto out;
+	} else {
+		while (aload(&n->flags) & INODE_POPULATING)
+			sched_yield();
 	}
 
-	/* mutable refs: retire and rebuild */
-	if (n->type != T_GENERIC) {
-		free_retired(axchg(&n->retired, NULL));
-		astore(&n->retired, axchg(&n->child, NULL));
-	}
-
-	if (n->ops->update(repo, n)) {
-		if (n->type != T_GENERIC)
-			astore(&n->child, axchg(&n->retired, NULL));
-		free(dh);
-		fuse_reply_err(req, EIO);
-		return;
-	}
-
-out:
 	dh->head = aload(&n->child);
+	dh->rebuild_seq = aload(&n->rebuild_seq);
 	fi->fh = (uint64_t) dh;
 	fuse_reply_open(req, fi);
 }
@@ -671,7 +646,6 @@ int
 main(int argc, char *argv[])
 {
 	int ret = EXIT_FAILURE;
-	struct fuse_session *se;
 	struct fuse_loop_config *c;
 	struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
 

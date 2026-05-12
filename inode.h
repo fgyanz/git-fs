@@ -70,11 +70,21 @@ struct inode {
 	struct inode_ops *ops;
 	struct git_object *obj;
 	git_oid oid;
+	/* bumped by 1 every time inotify watcher rebuilds a
+	 * directory's children. */
+	unsigned rebuild_seq;
 };
 
 extern struct inode_ops *get_inode_ops(unsigned);
 
 extern void inode_release(struct inode *);
+
+extern int inode_acquire(struct inode *);
+
+extern int is_inode_immutable(struct inode *n);
+
+extern int update_refs(struct git_repository *);
+
 
 #define aload(p)       __atomic_load_n(p, __ATOMIC_ACQUIRE)
 #define astore(p, v)   __atomic_store_n(p, v, __ATOMIC_RELEASE)

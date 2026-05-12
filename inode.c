@@ -2,6 +2,7 @@
 #include <git2.h>
 #include <libgen.h>
 #include <limits.h>
+#include <sched.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -11,24 +12,33 @@
 #include "tree.h"
 
 #define ARRAY_SIZE(x)  (sizeof(x) / sizeof(x[0]))
+#define POPULATE_RETRIES 100000
 
-static inline void
-set_obj(struct inode *n, struct git_object *obj)
+int
+is_inode_immutable(struct inode *n)
 {
-	struct git_object *old;
-
-	old = axchg(&n->obj, obj);
-	if (old && old != obj)
-		git_object_free(old);
+	return n->type == T_TREE || n->type == T_COMMIT ||
+	       n->type == T_HEAD || n->type == T_OBJECTS;
 }
 
-/*
- * add_tree_node init callback: save the oid on the fresh inode before publish
- */
-static void
-set_oid(struct inode *n, void *arg)
+int
+inode_acquire(struct inode *n)
 {
-	git_oid_cpy(&n->oid, arg);
+	unsigned f;
+	int tries = POPULATE_RETRIES;
+
+	while (tries--) {
+		f = aload(&n->flags);
+		/* Another thread is updating the inode
+		 * and its children. */
+		if (f & INODE_POPULATING) {
+			sched_yield();
+			continue;
+		}
+		if (acas(&n->flags, &f, f | INODE_POPULATING))
+			return 0;
+	}
+	return -1;
 }
 
 void
@@ -42,6 +52,26 @@ inode_release(struct inode *n)
 	obj = axchg(&n->obj, NULL);
 	if (obj)
 		git_object_free(obj);
+}
+
+static inline void
+set_obj(struct inode *n, struct git_object *obj)
+{
+	struct git_object *old;
+
+	old = axchg(&n->obj, obj);
+	if (old && old != obj)
+		git_object_free(old);
+}
+
+
+/*
+ * add_tree_node init callback: save the oid on the fresh inode before publish
+ */
+static void
+set_oid(struct inode *n, void *arg)
+{
+	git_oid_cpy(&n->oid, arg);
 }
 
 static inline void
@@ -240,7 +270,8 @@ update_tags(git_repository *repo, struct inode *dir)
 		if (git_reference_peel(&obj, r, GIT_OBJECT_COMMIT))
 			continue;
 		tag = (char *) git_reference_name(r);
-		n = add_tree_node(dir, basename(tag), T_COMMIT, T_DIR, NULL, NULL);
+		n = add_tree_node(dir, basename(tag), T_COMMIT, T_DIR,
+		                  set_oid, (void *) git_object_id(obj));
 		if (n)
 			set_commit(n, obj);
 	}
@@ -268,7 +299,8 @@ lookup_tags(git_repository *repo, struct inode *dir, const char *entry)
 	}
 
 	git_reference_free(r);
-	n = add_tree_node(dir, entry, T_COMMIT, T_DIR, NULL, NULL);
+	n = add_tree_node(dir, entry, T_COMMIT, T_DIR,
+	                  set_oid, (void *) git_object_id(obj));
 	if (!n)
 		return NULL;
 	set_commit(n, obj);
@@ -346,7 +378,8 @@ update_branches(git_repository *repo, struct inode *dir)
 		if (strchr(br, '/'))
 			continue;
 
-		n = add_tree_node(dir, br, T_COMMIT, T_DIR, NULL, NULL);
+		n = add_tree_node(dir, br, T_COMMIT, T_DIR,
+		                  set_oid, (void *) git_object_id(obj));
 		if (n)
 			set_commit(n, obj);
 	}
@@ -381,7 +414,8 @@ lookup_branches(git_repository *repo, struct inode *dir, const char *entry)
 	}
 
 	git_reference_free(r);
-	n = add_tree_node(dir, entry, T_COMMIT, T_DIR, NULL, NULL);
+	n = add_tree_node(dir, entry, T_COMMIT, T_DIR,
+	                  set_oid, (void *) git_object_id(obj));
 	if (!n)
 		return NULL;
 	set_commit(n, obj);
@@ -599,36 +633,46 @@ lookup_objects(git_repository *repo, struct inode *dir, const char *entry)
 	return n;
 }
 
-static int
-update_generic(git_repository *repo, struct inode *dir)
+static struct inode *
+lookup_generic(git_repository *repo, struct inode *dir, const char *entry)
 {
-	struct inode *n;
+	(void) repo;
+	return get_tree_child(dir, entry);
+}
 
-	if (dir->ino == ROOT) {
-		n = get_tree_node(HEAD);
-		return __update_head(repo, n);
+int
+update_refs(git_repository *repo)
+{
+	struct inode *n, *c, *p;
+	unsigned refs[] = {HEAD, HEADS, TAGS, REMOTES};
+	size_t i, end = ARRAY_SIZE(refs);
+
+	for (i = 0; i < end; i++) {
+		n = get_tree_node(refs[i]);
+		if (n->ops->update(repo, n))
+			return 1;
+		if (is_inode_immutable(n))
+			afor(&n->flags, INODE_READY);
+		
+	}
+
+	/* update the T_BRANCHES */
+	c = aload(&n->child);
+	if (c && c->type == T_BRANCHES) {
+		p = c;
+		do {
+			if (p->ops->update)
+				p->ops->update(repo, p);
+			p = aload(&p->sibling);
+		} while (p != c);
 	}
 
 	return 0;
 }
 
-static struct inode *
-lookup_generic(git_repository *repo, struct inode *dir, const char *entry)
-{
-	struct inode *n;
-
-	n = get_tree_child(dir, entry);
-
-	if (n && n->ino == HEAD && __update_head(repo, n))
-		return NULL;
-
-	return n;
-}
-
 struct inode_ops ops[T_ALL] =
 {
 	{
-		.update = update_generic,
 		.lookup = lookup_generic,
 	},
 	{
