@@ -1,11 +1,23 @@
 # git-fs
 
-Mount a git repository as a read-only FUSE filesystem.
+Mount a git repository as a read-only FUSE filesystem on Linux.
 
-Browse branches, tags, and commits as directories using standard Unix
-tools. No checkouts, no working tree copies, no disk overhead per ref.
-The filesystem mirrors the repository — pushes, branch updates, and
-new tags appear immediately on the next access.
+Access every branch, tag, and commit simultaneously as directories
+using standard Unix tools. No checkouts, no working tree copies, no
+disk overhead per ref. The filesystem mirrors the repository: pushes,
+branch updates, and new tags appear immediately on the next access.
+
+Useful for:
+
+- **Analysis**: feed multiple revisions into any tool that reads
+  files: linters, code review, license scanners, search indexers.
+- **Scripting**: read files across refs with plain paths instead of
+  `git show` and `git diff` plumbing.
+- **Browsing**: explore history with `ls`, `cat`, and `diff`.
+
+On long-running server mounts with warm caches, multi-ref reads can
+outperform equivalent git commands. Shared content across refs is
+served from cache, not re-read from disk.
 
 ## Usage
 
@@ -31,8 +43,17 @@ $ cat /srv/linux.git-fs/tags/v6.8/tree/Makefile
 VERSION = 6
 ...
 
+# diff across refs — no checkouts, no intermediate files
 $ diff /srv/linux.git-fs/branches/heads/master/tree/init/main.c \
        /srv/linux.git-fs/tags/v6.7/tree/init/main.c
+
+# grep across all maintenance branches at once
+$ grep -rl "CVE-2024" /srv/linux.git-fs/branches/heads/linux-6.*/tree/
+
+# feed multiple revisions into an analysis tool
+$ for tag in /srv/linux.git-fs/tags/v6.{5,6,7,8}; do
+    analyze "$tag/tree/kernel/"
+  done
 ```
 
 To unmount:
@@ -45,8 +66,8 @@ git-fs -u /srv/linux.git-fs
 
 ```
 -r, --repository   path to a local git repository (required)
--m, --mount        mountpoint path (default: <repo>-fs)
--u, --unmount      unmount the filesystem at path
+-m, --mount        mountpoint path
+-u, --unmount      unmount path
 -a, --allow-other  allow other users to access the mount
 -f, --foreground   run in the foreground
 -V, --version      print version
@@ -82,7 +103,8 @@ mountpoint/
 
 ## Building
 
-Requires libfuse3, libgit2, and a C compiler.
+Linux only. Requires libfuse3, libgit2, and a C compiler (GCC or
+Clang). Tested with glibc and musl.
 
 ```
 make
@@ -110,10 +132,18 @@ make test
 ## Design
 
 - FUSE low-level API — no libfuse high-level overhead.
-- Thread safe: Lock-free design with atomic operations.
+- Read-only. No write path in the code — the kernel enforces `ro` mount.
+- Thread safe: lock-free design with atomic operations.
 - Memory-mapped inode pool with batch reclaim via `madvise(2)`.
 - File content served through `memfd_create(2)` backed by FUSE passthrough.
 - Immutable git objects cached for 24h. Mutable refs refreshed on access.
+- Content-addressed caching — identical blobs and trees across refs are
+  resolved once, making multi-ref operations faster than repeated git
+  commands.
+
+## Inspired by
+
+Plan 9's [git/fs](https://orib.dev/git9.html) from git9.
 
 ## License
 
