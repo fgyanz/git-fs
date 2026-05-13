@@ -79,6 +79,9 @@ if [ ! -x "$GITFS" ]; then
 	exit 1
 fi
 
+# Resolve to an absolute path: the mount step cds into the repo.
+GITFS=$(readlink -f "$GITFS")
+
 TMPBASE="${TMPDIR:-/tmp}"
 MNT=$(mktemp -d "$TMPBASE/git-fs-stress-mnt-XXXXXX")
 ERR_LOG=$(mktemp "$TMPBASE/git-fs-stress-err-XXXXXX")
@@ -1047,7 +1050,7 @@ sample_commits() {
 sample_commits
 
 # mount
-"$GITFS" -r "$REPO" -m "$MNT"
+(cd "$REPO" && "$GITFS" -m "$MNT")
 
 # poll until mount is ready (up to 5 seconds)
 i=0

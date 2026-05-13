@@ -21,45 +21,49 @@ served from cache, not re-read from disk.
 
 ## Usage
 
-```
-git-fs -r /path/to/repo [-m /path/to/mountpoint]
-```
-
-If `-m` is omitted, the mountpoint defaults to `<repo>-fs` and is
-created automatically.
+Must be run from inside a git repository. git-fs discovers the repo from
+the current directory and by default mounts at `.git/fs`/.
 
 ```
-$ git-fs -r /srv/linux.git
-git-fs: mounted at /srv/linux.git-fs
-
-$ ls /srv/linux.git-fs/
+$ cd /path/to/repo
+$ git-fs
+$ ls .git/fs/
 HEAD/  branches/  objects/  tags/
 
-$ cat /srv/linux.git-fs/HEAD/hash
+$ cat .git/fs/HEAD/hash
 a1b2c3d4e5f6...
 
-$ cat /srv/linux.git-fs/tags/v6.8/tree/Makefile
+$ cat .git/fs/tags/v6.8/tree/Makefile
 # SPDX-License-Identifier: GPL-2.0
 VERSION = 6
 ...
 
 # diff across refs — no checkouts, no intermediate files
-$ diff /srv/linux.git-fs/branches/heads/master/tree/init/main.c \
-       /srv/linux.git-fs/tags/v6.7/tree/init/main.c
+$ diff .git/fs/branches/heads/master/tree/init/main.c \
+       .git/fs/tags/v6.7/tree/init/main.c
 
 # grep across all maintenance branches at once
-$ grep -rl "CVE-2024" /srv/linux.git-fs/branches/heads/linux-6.*/tree/
+$ grep -rl "CVE-2024" .git/fs/branches/heads/linux-6.*/tree/
 
 # feed multiple revisions into an analysis tool
-$ for tag in /srv/linux.git-fs/tags/v6.{5,6,7,8}; do
+$ for tag in .git/fs/tags/v6.{5,6,7,8}; do
     analyze "$tag/tree/kernel/"
   done
 ```
 
-To unmount:
+Custom mountpoint:
 
 ```
-git-fs -u /srv/linux.git-fs
+$ cd /srv/linux.git
+$ git-fs -m /mnt/linux
+```
+
+To unmount, run from inside the repo (defaults to `.git/fs`) or pass
+an explicit path:
+
+```
+git-fs -u                    # unmount <gitdir>/fs of the cwd repo
+git-fs -u /mnt/linux         # unmount a custom mountpoint
 ```
 
 ### Options

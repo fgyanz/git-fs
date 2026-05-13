@@ -16,6 +16,9 @@ if [ ! -x "$GITFS" ]; then
 	exit 1
 fi
 
+# Resolve to an absolute path: tests cd into the repo before invoking.
+GITFS=$(readlink -f "$GITFS")
+
 cleanup() {
 	fusermount3 -u "$MNT" 2>/dev/null || true
 	rm -rf "$REPO" "$MNT" "$REMOTE"
@@ -112,7 +115,7 @@ cd - > /dev/null
 echo "test_mount:"
 
 # Mount
-"$GITFS" -r "$REPO" -m "$MNT"
+(cd "$REPO" && "$GITFS" -m "$MNT")
 sleep 0.5
 
 # --- readdir: root directory ---
@@ -495,7 +498,7 @@ assert_eq "$?" "0" "unmount_succeeds"
 # --- Unmount flag: -u/--unmount ---
 
 # Remount for unmount flag tests
-"$GITFS" -r "$REPO" -m "$MNT"
+(cd "$REPO" && "$GITFS" -m "$MNT")
 sleep 0.3
 ls "$MNT/HEAD" > /dev/null 2>&1
 assert_eq "$?" "0" "remount_for_unmount_test"
@@ -507,7 +510,7 @@ MOUNTED=0; grep -q "$MNT" /proc/mounts && MOUNTED=1
 assert_eq "$MOUNTED" "0" "unmount_flag_short_verified"
 
 # Remount for --unmount long flag
-"$GITFS" -r "$REPO" -m "$MNT"
+(cd "$REPO" && "$GITFS" -m "$MNT")
 sleep 0.3
 
 "$GITFS" --unmount "$MNT"
@@ -520,10 +523,23 @@ assert_eq "$MOUNTED" "0" "unmount_flag_long_verified"
 BAD_RET=0; "$GITFS" -u /nonexistent/path 2>/dev/null || BAD_RET=$?
 assert_eq "$BAD_RET" "1" "unmount_bad_path"
 
+# -u with no path defaults to <gitdir>/fs of the discovered repo
+DEFAULT_MNT="${REPO}/.git/fs"
+(cd "$REPO" && "$GITFS")
+sleep 0.3
+ls "$DEFAULT_MNT/HEAD" > /dev/null 2>&1
+assert_eq "$?" "0" "unmount_default_setup"
+(cd "$REPO" && "$GITFS" -u)
+assert_eq "$?" "0" "unmount_no_path"
+sleep 0.3
+MOUNTED=0; grep -q "$DEFAULT_MNT" /proc/mounts && MOUNTED=1
+assert_eq "$MOUNTED" "0" "unmount_no_path_verified"
+rmdir "$DEFAULT_MNT" 2>/dev/null || true
+
 # --- mkdir: -m creates mountpoint if it doesn't exist ---
 NEW_MNT=$(mktemp -d /tmp/git-fs-test-mnt-XXXXXX)
 rm -rf "$NEW_MNT"
-"$GITFS" -r "$REPO" -m "$NEW_MNT"
+(cd "$REPO" && "$GITFS" -m "$NEW_MNT")
 sleep 0.3
 assert_eq "$(test -d "$NEW_MNT" && echo yes)" "yes" "mkdir_creates_mountpoint"
 ls "$NEW_MNT/HEAD" > /dev/null 2>&1
@@ -531,10 +547,10 @@ assert_eq "$?" "0" "mkdir_mount_works"
 fusermount3 -u "$NEW_MNT"
 rmdir "$NEW_MNT"
 
-# --- mkdir: default <repo>-fs mountpoint is auto-created ---
-DEFAULT_MNT="${REPO}-fs"
+# --- mkdir: default <gitdir>/fs mountpoint is auto-created ---
+DEFAULT_MNT="${REPO}/.git/fs"
 rm -rf "$DEFAULT_MNT"
-"$GITFS" -r "$REPO"
+(cd "$REPO" && "$GITFS")
 sleep 0.3
 assert_eq "$(test -d "$DEFAULT_MNT" && echo yes)" "yes" "mkdir_default_created"
 ls "$DEFAULT_MNT/HEAD" > /dev/null 2>&1
@@ -544,7 +560,7 @@ rmdir "$DEFAULT_MNT"
 
 # --- mkdir: -m with existing directory still works ---
 EXIST_MNT=$(mktemp -d /tmp/git-fs-test-mnt-XXXXXX)
-"$GITFS" -r "$REPO" -m "$EXIST_MNT"
+(cd "$REPO" && "$GITFS" -m "$EXIST_MNT")
 sleep 0.3
 ls "$EXIST_MNT/HEAD" > /dev/null 2>&1
 assert_eq "$?" "0" "mkdir_existing_dir_works"

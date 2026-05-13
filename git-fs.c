@@ -32,6 +32,7 @@ struct gitfs_conf {
 	int passthrough;
 	int allow_other;
 	char *unmount;
+	int unmount_pending;
 };
 
 /* per-handle state for open files */
@@ -54,7 +55,6 @@ struct gitfs_tls {
 
 enum {
 	OPT_MOUNT_PATH,
-	OPT_REPOSITORY_PATH,
 	OPT_FOREGROUND,
 	OPT_HELP,
 	OPT_VERSION,
@@ -73,16 +73,14 @@ enum {
 static struct fuse_opt gitfs_opts[] = {
 	GIT_OPT_KEY("-m %s", mnt,		OPT_MOUNT_PATH),
 	GIT_OPT_KEY("--mount %s", mnt,		OPT_MOUNT_PATH),
-	GIT_OPT_KEY("-r %s", repo, 		OPT_REPOSITORY_PATH),
-	GIT_OPT_KEY("--repository %s", repo,	OPT_REPOSITORY_PATH),
 	FUSE_OPT_KEY("-f",			OPT_FOREGROUND),
 	FUSE_OPT_KEY("--foreground",		OPT_FOREGROUND),
 	FUSE_OPT_KEY("-V",			OPT_VERSION),
 	FUSE_OPT_KEY("--version",		OPT_VERSION),
 	FUSE_OPT_KEY("-a",			OPT_ALLOW_OTHER),
 	FUSE_OPT_KEY("--allow-other",		OPT_ALLOW_OTHER),
-	GIT_OPT_KEY("-u %s", unmount,		OPT_UNMOUNT),
-	GIT_OPT_KEY("--unmount %s", unmount,	OPT_UNMOUNT),
+	FUSE_OPT_KEY("-u",			OPT_UNMOUNT),
+	FUSE_OPT_KEY("--unmount",		OPT_UNMOUNT),
 	FUSE_OPT_KEY("-h",			OPT_HELP),
 	FUSE_OPT_KEY("--help",			OPT_HELP),
 	FUSE_OPT_END
@@ -164,9 +162,6 @@ static void
 gitfs_init(void *priv, struct fuse_conn_info *conn)
 {
 	git_repository *repo;
-
-	git_libgit2_init();
-	git_libgit2_opts(GIT_OPT_SET_CACHE_MAX_SIZE, GIT_CACHE_MAX);
 
 	if (tree_init())
 		exit(EXIT_FAILURE);
@@ -549,19 +544,19 @@ static const struct fuse_lowlevel_ops ops = {
 	.release = gitfs_release,
 };
 
-void
+static void
 print_help(void)
 {
 	fprintf(stderr,
 		"usage: git-fs [options]\n"
+		"\n"
 		"options:\n"
-		"\t-m	--mount		File system mount path.\n"
-		"\t-r	--repository	Local git repository path.\n"
-		"\t-a	--allow-other	Allow other users to access the mount.\n"
-		"\t-u	--unmount	Unmount the file system at path.\n"
-		"\t-f	--foreground	Run in the foreground.\n"
-		"\t-h	--help		Print this help.\n"
-		"\t-V	--version	Print version.\n");
+		"\t-m	--mount [path]	 Mount path.\n"
+		"\t-u	--unmount [path] Unmount path.\n"
+		"\t-a	--allow-other	 Allow other users to access the mount.\n"
+		"\t-f	--foreground	 Run in the foreground.\n"
+		"\t-h	--help		 Print this help.\n"
+		"\t-V	--version	 Print version.\n");
 }
 
 static int
@@ -575,7 +570,16 @@ gitfs_opt_handler(void *data, const char *arg, int key, struct fuse_args *out)
 		conf.foreground = 1;
 		return 0;
 	case OPT_UNMOUNT:
+		conf.unmount_pending = 1;
 		return 0;
+	case FUSE_OPT_KEY_NONOPT:
+		if (conf.unmount_pending) {
+			conf.unmount = strdup(arg);
+			conf.unmount_pending = 0;
+			return 0;
+		}
+		fprintf(stderr, "git-fs: unexpected argument: %s\n", arg);
+		exit(EXIT_FAILURE);
 	case OPT_HELP:
 		print_help();
 		exit(EXIT_SUCCESS);
@@ -592,36 +596,65 @@ gitfs_opt_handler(void *data, const char *arg, int key, struct fuse_args *out)
 }
 
 static void
+gitfs_unmount(const char *path)
+{
+	git_buf gitdir = {0};
+	char *umnt;
+
+	/*  If none specified, fallback to default path: .git/fs. */
+	if (path == NULL) {
+		char p[PATH_MAX];
+		if (git_repository_discover(&gitdir, ".", 0, NULL)) {
+			fprintf(stderr, "git-fs: not a git repository\n");
+			exit(EXIT_FAILURE);
+		}
+		snprintf(p, sizeof(p), "%sfs", gitdir.ptr);
+		path = strdup(p);
+		git_buf_dispose(&gitdir);
+	}
+
+	umnt = realpath(path, NULL);
+	if (umnt == NULL) {
+		fprintf(stderr, "git-fs: %s: %s\n",
+			path, strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+
+	execlp("fusermount3", "fusermount3", "-u", umnt, NULL);
+
+	fprintf(stderr, "git-fs: failed to exec fusermount3: %s\n",
+		strerror(errno));
+	exit(EXIT_FAILURE);
+}
+
+static void
 set_gitfs_conf(struct fuse_args *args, struct gitfs_conf *conf)
 {
-	char *repo, *umnt, mnt[PATH_MAX];
+	git_buf gitdir = {0};
+	char mnt[PATH_MAX];
+	size_t len;
 
 	if (fuse_opt_parse(args, conf, gitfs_opts, gitfs_opt_handler))
 		exit(EXIT_FAILURE);
 
-	if (conf->unmount) {
-		umnt = realpath(conf->unmount, NULL);
-		if (umnt == NULL) {
-			fprintf(stderr, "git-fs: %s: %s\n",
-				conf->unmount, strerror(errno));
-			exit(EXIT_FAILURE);
-		}
-		execlp("fusermount3", "fusermount3", "-u", umnt, NULL);
-		fprintf(stderr, "git-fs: failed to exec fusermount3: %s\n",
-			strerror(errno));
+	if (conf->unmount_pending || conf->unmount)
+		gitfs_unmount(conf->unmount);
+
+	if (git_repository_discover(&gitdir, ".", 0, NULL)) {
+		fprintf(stderr, "git-fs: not a git repository\n");
 		exit(EXIT_FAILURE);
 	}
 
-	if (conf->repo == NULL) {
-		fprintf(stderr, "-r/--repository option is mandatory. Aborting.\n");
-		exit(EXIT_FAILURE);
-	}
+	conf->repo = strdup(gitdir.ptr);
+	git_buf_dispose(&gitdir);
 
-	repo = calloc(PATH_MAX, sizeof(char));
-	conf->repo = realpath(conf->repo, repo);
+	/* libgit2 returns the gitdir with a trailing slash */
+	len = strlen(conf->repo);
+	if (len > 1 && conf->repo[len - 1] == '/')
+		conf->repo[--len] = '\0';
 
 	if (conf->mnt == NULL)
-		snprintf(mnt, PATH_MAX, "%s-fs",  conf->repo);
+		snprintf(mnt, PATH_MAX, "%s/fs", conf->repo);
 	else
 		snprintf(mnt, PATH_MAX, "%s", conf->mnt);
 
@@ -649,10 +682,8 @@ main(int argc, char *argv[])
 	struct fuse_loop_config *c;
 	struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
 
-	if (argc == 1) {
-		print_help();
-		return EXIT_SUCCESS;
-	}
+	git_libgit2_init();
+	git_libgit2_opts(GIT_OPT_SET_CACHE_MAX_SIZE, GIT_CACHE_MAX);
 
 	set_gitfs_conf(&args, &conf);
 	set_fuse_args(&args);
