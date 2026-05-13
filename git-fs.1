@@ -1,0 +1,162 @@
+.TH GIT-FS 1
+.SH NAME
+git-fs \- mount a git repository as a filesystem
+
+.SH SYNOPSIS
+.B git-fs
+[
+.B \-af
+]
+[
+.B \-m
+.I mtpt
+]
+.br
+.B git-fs
+.B \-u
+[
+.I mtpt
+]
+
+.SH DESCRIPTION
+.PP
+.B Git-fs
+mounts a git repository as a read-only filesystem.
+Branches, tags, and commits are exposed as directories.
+The repository is found by walking up from the working directory;
+the default mountpoint is
+.IR .git/fs/ .
+
+.PP
+New commits, branch updates, and tag updates in the underlying
+repository are reflected on the next access.
+Detection uses
+.BR inotify (7),
+not polling.
+
+.PP
+The top level contains the following entries:
+
+.TP
+.I HEAD/
+The current commit.
+
+.TP
+.I branches/heads/
+Local branches.
+Each branch is a directory named after the ref.
+
+.TP
+.I branches/remotes/
+Remote-tracking branches, grouped one directory per remote.
+
+.TP
+.I tags/
+Tags.
+Both lightweight and annotated tags are exposed as commit directories.
+
+.TP
+.I objects/
+Every commit in the repository, named by full SHA.
+
+.PP
+Each ref or commit is the same hierarchy:
+
+.TP
+.I tree/
+A directory containing the files at this revision.
+The mtime of each entry is the commit date.
+
+.TP
+.I hash
+The commit id.
+
+.TP
+.I msg
+The full commit message.
+
+.TP
+.I parent/
+The parent commit, as the same hierarchy.
+For a merge commit, only the first parent is exposed.
+
+.PP
+Trees are presented as directory listings and blobs as files.
+
+.SH OPTIONS
+.TP
+.BI \-m " mtpt"
+Mount on
+.IR mtpt .
+The default is
+.IR .git/fs/ .
+
+.TP
+\fB\-u\fR [\fImtpt\fR]
+Unmount.
+With no argument, unmounts
+.I .git/fs/
+of the repository in the current directory.
+
+.TP
+.B \-a
+Allow other users to access the mount.
+Requires
+.B user_allow_other
+in
+.BR fuse.conf (5).
+
+.TP
+.B \-f
+Run in the foreground.
+
+.TP
+.B \-V
+Print the version and exit.
+
+.TP
+.B \-h
+Print a usage summary and exit.
+
+.SH FILES
+.TP
+.I .git/
+The git repository being served.
+
+.TP
+.I .git/HEAD
+The reference followed by
+.IR .git/fs/HEAD/ .
+
+.TP
+.IR .git/refs/ ", " .git/packed-refs
+Watched for changes; rebuilt listings are pushed to the kernel via
+.BR fuse_lowlevel_notify_inval_entry (3).
+
+.SH AUTHOR
+Fernando González
+.MT fernando.gonzalez@suse.com
+.ME .
+
+.SH "REPORTING BUGS"
+Report bugs at
+.UR https://github.com/fgyanz/git-fs/issues
+.UE .
+
+.SH BUGS
+.PP
+Branch names containing a slash (e.g.\&
+.IR feature/foo )
+are not exposed.
+
+.PP
+.BR readlink (2)
+is not implemented.
+Symbolic links recorded in a tree are reported as regular files
+containing the link target.
+
+.SH "SEE ALSO"
+.IR fuse (8),
+.IR git (1),
+.IR inotify (7),
+.IR mount.fuse3 (8)

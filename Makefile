@@ -2,6 +2,7 @@
 
 PREFIX = /usr/local
 BINDIR = $(PREFIX)/bin
+MANDIR = $(PREFIX)/share/man
 
 PKG_CFLAGS = $$(pkg-config --cflags fuse3 libgit2)
 PKG_LIBS   = $$(pkg-config --libs fuse3 libgit2)
@@ -32,12 +33,15 @@ $(BIN): $(OBJS)
 install: $(BIN)
 	install -d $(DESTDIR)$(BINDIR)
 	install -s -m 755 $(BIN) $(DESTDIR)$(BINDIR)/$(BIN)
+	install -d $(DESTDIR)$(MANDIR)/man1
+	install -m 644 $(BIN).1 $(DESTDIR)$(MANDIR)/man1/$(BIN).1
 
 passthrough: install
 	setcap cap_sys_admin+ep $(DESTDIR)$(BINDIR)/$(BIN)
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/$(BIN)
+	rm -f $(DESTDIR)$(MANDIR)/man1/$(BIN).1
 
 TESTS = tests/test_tree tests/test_inode
 
