@@ -8,9 +8,10 @@
 static int tests_run;
 static int tests_failed;
 
-#define FAIL(fmt, ...) do { \
-	fprintf(stderr, "  FAIL %s:%d: " fmt "\n", \
-	        __FILE__, __LINE__, ##__VA_ARGS__); \
+#define FAIL(...) do { \
+	fprintf(stderr, "  FAIL %s:%d: ", __FILE__, __LINE__); \
+	fprintf(stderr, __VA_ARGS__); \
+	fputc('\n', stderr); \
 	return 1; \
 } while (0)
 

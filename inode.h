@@ -4,6 +4,17 @@
 #include <git2/oid.h>
 #include <sys/stat.h>
 
+#define aload(p)       __atomic_load_n(p, __ATOMIC_ACQUIRE)
+#define astore(p, v)   __atomic_store_n(p, v, __ATOMIC_RELEASE)
+#define axchg(p, v)    __atomic_exchange_n(p, v, __ATOMIC_ACQ_REL)
+#define acas(p, e, d)  __atomic_compare_exchange_n(p, e, d, 1, \
+                           __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)
+#define afadd(p, v)    __atomic_fetch_add(p, v, __ATOMIC_ACQ_REL)
+#define afsub(p, v)    __atomic_fetch_sub(p, v, __ATOMIC_ACQ_REL)
+#define afor(p, v)     __atomic_fetch_or(p, v, __ATOMIC_RELEASE)
+#define afand(p, v)    __atomic_fetch_and(p, v, __ATOMIC_RELEASE)
+
+
 #define T_DIR           S_IFDIR
 #define T_FILE          S_IFREG
 #define nlink(x)        ((x) == T_DIR ? 2 : 1)
@@ -46,7 +57,8 @@ struct inode;
 
 struct inode_ops {
 	int (*update)(struct git_repository *, struct inode *);
-	struct inode * (*lookup)(struct git_repository *, struct inode *,const char *);
+	struct inode * (*lookup)(struct git_repository *,
+	                         struct inode *, const char *);
 	int (*open)(struct git_repository *, struct inode *);
 };
 
@@ -62,7 +74,7 @@ struct inode {
 	union {
 		struct inode *parent;
 		unsigned long parent_ino;
-	};
+	} u;
 	struct inode *sibling;
 	struct inode *child;
 	struct inode *retired;
@@ -82,16 +94,5 @@ extern int inode_acquire(struct inode *);
 extern int is_inode_immutable(struct inode *n);
 
 extern int update_refs(struct git_repository *);
-
-
-#define aload(p)       __atomic_load_n(p, __ATOMIC_ACQUIRE)
-#define astore(p, v)   __atomic_store_n(p, v, __ATOMIC_RELEASE)
-#define axchg(p, v)    __atomic_exchange_n(p, v, __ATOMIC_ACQ_REL)
-#define acas(p, e, d)  __atomic_compare_exchange_n(p, e, d, 1, \
-                           __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)
-#define afadd(p, v)    __atomic_fetch_add(p, v, __ATOMIC_ACQ_REL)
-#define afsub(p, v)    __atomic_fetch_sub(p, v, __ATOMIC_ACQ_REL)
-#define afor(p, v)     __atomic_fetch_or(p, v, __ATOMIC_RELEASE)
-#define afand(p, v)    __atomic_fetch_and(p, v, __ATOMIC_RELEASE)
 
 #endif

@@ -18,51 +18,51 @@
 #define BATCH_RECLAIM    UINT_MAX
 
 static struct inode top[] = {
-	{},
+	{0},
 	{
 		.name = "/",
 		.ino = ROOT,
-		.parent_ino = ROOT,
+		.u.parent_ino = ROOT,
 		.mode = T_DIR,
 	},
 	{
 		.name = "branches",
 		.ino = BRANCHES,
-		.parent_ino = ROOT,
+		.u.parent_ino = ROOT,
 		.mode = T_DIR,
 	},
 	{
 		.name = "tags",
 		.ino = TAGS,
-		.parent_ino = ROOT,
+		.u.parent_ino = ROOT,
 		.mode = T_DIR,
 		.type = T_TAGS,
 	},
 	{
 		.name = "objects",
 		.ino = OBJECTS,
-		.parent_ino = ROOT,
+		.u.parent_ino = ROOT,
 		.mode = T_DIR,
 		.type = T_OBJECTS,
 	},
 	{
 		.name = "HEAD",
 		.ino = HEAD,
-		.parent_ino = ROOT,
+		.u.parent_ino = ROOT,
 		.mode = T_DIR,
 		.type = T_HEAD,
 	},
 	{
 		.name = "remotes",
 		.ino = REMOTES,
-		.parent_ino = BRANCHES,
+		.u.parent_ino = BRANCHES,
 		.mode = T_DIR,
 		.type = T_REMOTES,
 	},
 	{
 		.name = "heads",
 		.ino = HEADS,
-		.parent_ino = BRANCHES,
+		.u.parent_ino = BRANCHES,
 		.mode = T_DIR,
 		.type = T_BRANCHES,
 	},
@@ -227,7 +227,7 @@ add_tree_node(struct inode *p, const char *name, unsigned type, mode_t mode,
 	n->name = strdup(name);
 	n->ops = get_inode_ops(type);
 	n->mode = mode;
-	n->parent = p;
+	n->u.parent = p;
 	n->type = type;
 
 	if (init)
@@ -341,10 +341,10 @@ tree_path(struct inode *node, char *opath, size_t size, struct inode **tree)
 	vstart = v;
 	vend = v + MAX_TREE_DEPTH;
 	*vstart++ = NULL;
-	while (node->parent->type == T_TREE && vstart != vend) {
+	while (node->u.parent->type == T_TREE && vstart != vend) {
 		assert(node->ino != ROOT);
 		*vstart++ = node->name;
-		node = node->parent;
+		node = node->u.parent;
 	}
 
 	*tree = node;
@@ -467,7 +467,7 @@ tree_init(void)
 		ino = top[i].ino;
 		n = nodes + ino;
 		n->ino = ino;
-		n->parent = nodes + top[i].parent_ino;
+		n->u.parent = nodes + top[i].u.parent_ino;
 		n->name = top[i].name;
 		n->type = top[i].type;
 		n->mode = top[i].mode;
@@ -477,11 +477,11 @@ tree_init(void)
 		if (n->ino == ROOT)
 			continue;
 
-		if (n->parent->child) {
-			n->sibling = n->parent->child->sibling;
-			n->parent->child->sibling = n;
+		if (n->u.parent->child) {
+			n->sibling = n->u.parent->child->sibling;
+			n->u.parent->child->sibling = n;
 		} else {
-			n->parent->child = n;
+			n->u.parent->child = n;
 			n->sibling = n;
 		}
 	}

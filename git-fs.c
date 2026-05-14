@@ -206,7 +206,6 @@ gitfs_destroy(void *priv)
 	git_libgit2_shutdown();
 }
 
-
 static void
 fill_stat(struct stat *st, struct inode *n)
 {
@@ -311,7 +310,7 @@ gitfs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size,
 			name = ".";
 			break;
 		case DIR_PARENT:
-			n = p->parent;
+			n = p->u.parent;
 			name = "..";
 			dh->cursor = dh->head;
 			break;

@@ -8,7 +8,7 @@ PKG_LIBS   = $$(pkg-config --libs fuse3 libgit2)
 
 CC      = cc
 CFLAGS  = -D_GNU_SOURCE -D_FORTIFY_SOURCE=2 -Wall -Wextra \
-          -Wno-unused-parameter \
+          -std=c99 -pedantic -Wno-unused-parameter \
           -O2 -fPIE -fstack-protector-strong $(PKG_CFLAGS)
 LDFLAGS = -pie -Wl,-z,relro,-z,now
 LIBS    = $(PKG_LIBS)

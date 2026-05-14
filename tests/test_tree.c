@@ -24,37 +24,37 @@ TEST(test_tree_init)
 	n = get_tree_node(BRANCHES);
 	ASSERT_NOT_NULL(n);
 	ASSERT_STR_EQ(n->name, "branches");
-	ASSERT_EQ(n->parent->ino, ROOT);
+	ASSERT_EQ(n->u.parent->ino, ROOT);
 
 	n = get_tree_node(TAGS);
 	ASSERT_NOT_NULL(n);
 	ASSERT_STR_EQ(n->name, "tags");
-	ASSERT_EQ(n->parent->ino, ROOT);
+	ASSERT_EQ(n->u.parent->ino, ROOT);
 
 	n = get_tree_node(OBJECTS);
 	ASSERT_NOT_NULL(n);
 	ASSERT_STR_EQ(n->name, "objects");
-	ASSERT_EQ(n->parent->ino, ROOT);
+	ASSERT_EQ(n->u.parent->ino, ROOT);
 	ASSERT_EQ(n->type, T_OBJECTS);
 	ASSERT_NOT_NULL(n->ops);
 
 	n = get_tree_node(HEAD);
 	ASSERT_NOT_NULL(n);
 	ASSERT_STR_EQ(n->name, "HEAD");
-	ASSERT_EQ(n->parent->ino, ROOT);
+	ASSERT_EQ(n->u.parent->ino, ROOT);
 	ASSERT_EQ(n->type, T_HEAD);
 
 	/* BRANCHES children: heads, remotes */
 	n = get_tree_node(HEADS);
 	ASSERT_NOT_NULL(n);
 	ASSERT_STR_EQ(n->name, "heads");
-	ASSERT_EQ(n->parent->ino, BRANCHES);
+	ASSERT_EQ(n->u.parent->ino, BRANCHES);
 	ASSERT_EQ(n->type, T_BRANCHES);
 
 	n = get_tree_node(REMOTES);
 	ASSERT_NOT_NULL(n);
 	ASSERT_STR_EQ(n->name, "remotes");
-	ASSERT_EQ(n->parent->ino, BRANCHES);
+	ASSERT_EQ(n->u.parent->ino, BRANCHES);
 	ASSERT_EQ(n->type, T_REMOTES);
 
 	return 0;
@@ -92,7 +92,7 @@ TEST(test_add_node)
 	ASSERT_STR_EQ(child->name, "v1.0");
 	ASSERT_EQ(child->type, T_COMMIT);
 	ASSERT_EQ(child->mode, T_DIR);
-	ASSERT_EQ(child->parent->ino, TAGS);
+	ASSERT_EQ(child->u.parent->ino, TAGS);
 
 	/* Should be findable via get_tree_child */
 	ASSERT_EQ((long)get_tree_child(parent, "v1.0"), (long)child);

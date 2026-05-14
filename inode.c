@@ -14,6 +14,29 @@
 #define ARRAY_SIZE(x)  (sizeof(x) / sizeof(x[0]))
 #define POPULATE_RETRIES 100000
 
+#define GIT_BRANCH(x)  (is_remote(x) ? \
+                        GIT_BRANCH_REMOTE : GIT_BRANCH_LOCAL)
+
+#define GIT_HASH_SZ    (GIT_OID_HEXSZ + 1)
+
+struct hardcoded_dentry {
+	const char *name;
+	unsigned type;
+	mode_t mode;
+};
+
+extern git_odb *get_gitfs_odb(void);
+extern git_repository *get_gitfs_repo(void);
+
+/* the four virtual children every commit-like dir (T_COMMIT, T_HEAD)
+ * exposes.  */
+static struct hardcoded_dentry dentries[] = {
+	{"tree",   T_TREE,   T_DIR},
+	{"hash",   T_HASH,   T_FILE},
+	{"msg",    T_MSG,    T_FILE},
+	{"parent", T_COMMIT, T_DIR},
+};
+
 int
 is_inode_immutable(struct inode *n)
 {
@@ -50,26 +73,6 @@ set_oid(struct inode *n, void *arg)
 	git_oid_cpy(&n->oid, arg);
 }
 
-#define GIT_BRANCH(x)  (is_remote(x) ? \
-                        GIT_BRANCH_REMOTE : GIT_BRANCH_LOCAL)
-
-#define GIT_HASH_SZ    (GIT_OID_HEXSZ + 1)
-
-struct hardcoded_dentry {
-	const char *name;
-	unsigned type;
-	mode_t mode;
-};
-
-/* the four virtual children every commit-like dir (T_COMMIT, T_HEAD)
- * exposes.  */
-static struct hardcoded_dentry dentries[] = {
-	{"tree",   T_TREE,   T_DIR},
-	{"hash",   T_HASH,   T_FILE},
-	{"msg",    T_MSG,    T_FILE},
-	{"parent", T_COMMIT, T_DIR},
-};
-
 static inline int
 is_dentry_dir(const git_tree_entry *dentry)
 {
@@ -79,11 +82,8 @@ is_dentry_dir(const git_tree_entry *dentry)
 static inline int
 is_remote(struct inode *n)
 {
-	return n->parent->type == T_REMOTES;
+	return n->u.parent->type == T_REMOTES;
 }
-
-extern git_odb *get_gitfs_odb(void);
-extern git_repository *get_gitfs_repo(void);
 
 static size_t
 get_node_size(git_repository *repo, struct inode *node)
