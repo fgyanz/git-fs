@@ -149,6 +149,12 @@ make test
 
 Plan 9's [git/fs](https://orib.dev/git9.html) from git9.
 
+## Disclaimer
+
+git-fs is under active development and may contain bugs. It is
+strictly read-only, so there is no danger to your repository. Use at
+your own risk, and please report any issues you encounter.
+
 ## License
 
 GPLv3
