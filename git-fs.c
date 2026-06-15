@@ -558,12 +558,58 @@ print_help(void)
 		"\t-V	--version	 Print version.\n");
 }
 
+static const char *
+fuse_conf_path(void)
+{
+	if (access("/etc/fuse3.conf", F_OK) == 0)
+		return "/etc/fuse3.conf";
+
+	/* In some distros fuse.conf is still being used */
+	return "/etc/fuse.conf";
+}
+
+static int
+is_allow_other_permitted(const char *conf_path)
+{
+	FILE *f;
+	char line[256];
+	int enabled = 0;
+
+	if (geteuid() == 0)
+		return 1;
+
+	f = fopen(conf_path, "r");
+	if (!f)
+		return 0;
+
+	while (fgets(line, sizeof(line), f)) {
+		char *p = line;
+		while (*p == ' ' || *p == '\t') p++;
+		if (*p == '#')
+			continue;
+		if (strncmp(p, "user_allow_other", 16) == 0) {
+			enabled = 1;
+			break;
+		}
+	}
+
+	fclose(f);
+	return enabled;
+}
+
 static int
 gitfs_opt_handler(void *data, const char *arg, int key, struct fuse_args *out)
 {
+	const char *conf_path;
+
 	switch(key) {
 	case OPT_ALLOW_OTHER:
-		conf.allow_other = 1;
+		conf_path = fuse_conf_path();
+		if (is_allow_other_permitted(conf_path))
+			conf.allow_other = 1;
+		else
+			fprintf(stderr, "git-fs: --allow-other disabled." \
+					" Check %s\n", conf_path);
 		return 0;
 	case OPT_FOREGROUND:
 		conf.foreground = 1;
