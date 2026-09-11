@@ -17,7 +17,7 @@
 #include "inotify.h"
 #include "tree.h"
 
-#define GITFS_VERSION    "0.1"
+#define GITFS_VERSION    "0.1.1"
 #define GIT_CACHE_MAX    (32 << 20)  /* 32 MB */
 #define FUSE_CLONE_FD    1
 #define GITFS_PERM       0550
@@ -167,7 +167,11 @@ gitfs_init(void *priv, struct fuse_conn_info *conn)
 		exit(EXIT_FAILURE);
 
 	conn->no_interrupt = 1;
-	conf.passthrough = 1;
+
+	// Passthrough doesn't work quite well within containers.
+	// Disabled as a work around for the time being.
+	// TODO: Find a better solution...
+	conf.passthrough = 0;
 
 	if (!fuse_set_feature_flag(conn, FUSE_CAP_PASSTHROUGH)) {
 		fprintf(stderr, "git-fs: FUSE passthrough not available, "
