@@ -754,6 +754,8 @@ main(int argc, char *argv[])
 	ret = fuse_session_loop_mt(se, c);
 
 	fuse_loop_cfg_destroy(c);
+	/* unmount closes the fd the watcher writes to */
+	inotify_stop();
 	fuse_session_unmount(se);
 
 err_out2:

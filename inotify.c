@@ -39,7 +39,10 @@ static struct {
 	pthread_t tid;
 	struct fuse_session *session;
 	char gitdir[PATH_MAX];
-} w;
+} w = {
+	.ino_fd = -1,
+	.stop_fd = -1,
+};
 
 /* invalidate kernel dentry cache for every name in the retired ring. */
 static void
