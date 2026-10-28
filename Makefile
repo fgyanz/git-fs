@@ -68,8 +68,11 @@ resources: $(BIN)
 test-asan:
 	$(MAKE) sanitize SAN=asan SANITIZE=address,undefined
 
+test-tsan:
+	$(MAKE) sanitize SAN=tsan SANITIZE=thread
+
 sanitize: git-fs-$(SAN) tests/test_tree-$(SAN) tests/test_inode-$(SAN)
-	./tests/test_asan.sh ./git-fs-$(SAN)
+	./tests/test_sanitize.sh $(SAN)
 
 git-fs-$(SAN): $(SRCS) $(HDRS)
 	$(CC) $(SAN_CFLAGS) $(LDFLAGS) -o $@ $(SRCS) $(LIBS)
@@ -87,4 +90,4 @@ tests/test_inode-$(SAN): tests/test_inode.c tests/harness.h tree.c inode.c inode
 	$(CC) $(SAN_CFLAGS) $(LDFLAGS) -o $@ tests/test_inode.c tree.c inode.c $(LIBS)
 
 clean:
-	rm -f $(BIN) $(OBJS) $(TESTS) git-fs-asan tests/test_*-asan
+	rm -f $(BIN) $(OBJS) $(TESTS) git-fs-?san tests/test_*-?san
