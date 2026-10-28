@@ -49,6 +49,7 @@ test: $(TESTS) $(BIN)
 	./tests/test_tree
 	./tests/test_inode
 	./tests/test_mount.sh
+	./tests/test_resources.sh
 
 stress: $(BIN)
 	REPO=$(REPO) ./tests/test_stress.sh
@@ -56,10 +57,13 @@ stress: $(BIN)
 stress-kernel: $(BIN)
 	./tests/test_kernel_stress.sh
 
-tests/test_tree: tests/test_tree.c tree.c inode.c inode.h tree.h
+resources: $(BIN)
+	REPO=$(REPO) ./tests/test_resources.sh
+
+tests/test_tree: tests/test_tree.c tests/harness.h tree.c inode.c inode.h tree.h
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tests/test_tree.c tree.c inode.c $(LIBS)
 
-tests/test_inode: tests/test_inode.c tree.c inode.c inode.h tree.h
+tests/test_inode: tests/test_inode.c tests/harness.h tree.c inode.c inode.h tree.h
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tests/test_inode.c tree.c inode.c $(LIBS)
 
 clean:

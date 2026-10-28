@@ -3,8 +3,9 @@
 #include "../tree.h"
 
 #include <git2.h>
+#include <pthread.h>
 
-/* stub for inode.c's get_gitfs_odb() — tree tests don't use git */
+/* inode.c needs it to link; tree tests don't use git */
 git_odb *get_gitfs_odb(void) { return NULL; }
 
 extern struct inode *nodes;
@@ -20,7 +21,6 @@ TEST(test_tree_init)
 	ASSERT_EQ(root->mode, T_DIR);
 	ASSERT_EQ(root->ino, ROOT);
 
-	/* ROOT's children: branches, tags, objects, HEAD */
 	n = get_tree_node(BRANCHES);
 	ASSERT_NOT_NULL(n);
 	ASSERT_STR_EQ(n->name, "branches");
@@ -44,7 +44,6 @@ TEST(test_tree_init)
 	ASSERT_EQ(n->u.parent->ino, ROOT);
 	ASSERT_EQ(n->type, T_HEAD);
 
-	/* BRANCHES children: heads, remotes */
 	n = get_tree_node(HEADS);
 	ASSERT_NOT_NULL(n);
 	ASSERT_STR_EQ(n->name, "heads");
@@ -94,7 +93,6 @@ TEST(test_add_node)
 	ASSERT_EQ(child->mode, T_DIR);
 	ASSERT_EQ(child->u.parent->ino, TAGS);
 
-	/* Should be findable via get_tree_child */
 	ASSERT_EQ((long)get_tree_child(parent, "v1.0"), (long)child);
 
 	return 0;
@@ -132,7 +130,6 @@ TEST(test_get_tree_node_valid)
 
 TEST(test_get_tree_node_invalid)
 {
-	/* Out of range */
 	ASSERT_NULL(get_tree_node(999999999));
 
 	return 0;
@@ -152,7 +149,6 @@ TEST(test_get_tree_child_empty_dir)
 {
 	struct inode *parent;
 
-	/* OBJECTS has no children */
 	parent = get_tree_node(OBJECTS);
 	ASSERT_NULL(get_tree_child(parent, "anything"));
 
@@ -188,22 +184,12 @@ TEST(test_get_tree_sibling)
 	add_tree_node(parent, "upstream", T_BRANCHES, T_DIR, NULL, NULL);
 	add_tree_node(parent, "fork", T_BRANCHES, T_DIR, NULL, NULL);
 
-	/*
-	 * Circular list insertion: each new node is inserted after
-	 * parent->child. parent->child stays as 'a' (first inserted).
-	 *
-	 * get_tree_sibling(node, pos) is a do-while that always advances
-	 * at least once. pos=0 advances once, pos=1 advances once, etc.
-	 * This matches readdir usage: offset 0 is handled by using
-	 * p->child directly, offset >= 1 uses get_tree_sibling.
-	 */
+	/* new nodes go after parent->child, so the first one stays head */
 	first = parent->child;
 	ASSERT_EQ((long)first, (long)a);
 
-	/* offset 1 advances once from first */
 	ASSERT_EQ((long)get_tree_sibling(first, 1), (long)first->sibling);
 
-	/* full cycle: offset == count wraps back to start */
 	ASSERT_EQ((long)get_tree_sibling(first, 3), (long)first);
 
 	return 0;
@@ -221,7 +207,6 @@ TEST(test_circular_list_integrity)
 	add_tree_node(parent, "feature-x", T_COMMIT, T_DIR, NULL, NULL);
 	add_tree_node(parent, "release-1", T_COMMIT, T_DIR, NULL, NULL);
 
-	/* Walk the circular list, should visit exactly 4 nodes */
 	n = parent->child;
 	count = 0;
 	i = 0;
@@ -244,7 +229,6 @@ TEST(test_tree_path)
 	struct inode *tree_out = NULL;
 	char path[512] = {0};
 
-	/* Simulate a commit with nested tree:  tree/ -> dir_a/ -> file_b */
 	commit_node = get_tree_node(HEAD);
 
 	tree_node = add_tree_node(commit_node, "tree", T_TREE, T_DIR, NULL, NULL);
@@ -253,17 +237,14 @@ TEST(test_tree_path)
 
 	tree_path(file_b, path, sizeof(path), &tree_out);
 
-	/* tree_out should point to the T_TREE node whose parent is NOT T_TREE */
+	/* the top tree node: its parent isn't a T_TREE */
 	ASSERT_NOT_NULL(tree_out);
 	ASSERT_EQ((long)tree_out, (long)tree_node);
 
-	/* path should be "/src/main.c" */
 	ASSERT_STR_EQ(path, "/src/main.c");
 
 	return 0;
 }
-
-/* --- Large offset tests --- */
 
 TEST(test_get_tree_sibling_large)
 {
@@ -282,13 +263,8 @@ TEST(test_get_tree_sibling_large)
 
 	ASSERT_EQ(count_tree_children(parent), 500);
 
-	/*
-	 * Simulate readdir offset traversal: offset 0 uses p->child
-	 * directly, offset >= 1 uses get_tree_sibling(p->child, offset).
-	 *
-	 * Walk all 500 entries the same way readdir does and verify
-	 * we visit exactly 500 unique nodes with no duplicates.
-	 */
+	/* readdir: offset 0 is p->child, any other offset n is
+	 * get_tree_sibling(p->child, n) */
 	count = 0;
 	for (i = 0; i < 500; i++) {
 		if (i == 0)
@@ -302,7 +278,6 @@ TEST(test_get_tree_sibling_large)
 	}
 	ASSERT_EQ(count, 500);
 
-	/* Verify specific offsets land on different nodes */
 	ASSERT((long)get_tree_sibling(parent->child, 1) !=
 	       (long)parent->child);
 	ASSERT((long)get_tree_sibling(parent->child, 250) !=
@@ -310,7 +285,6 @@ TEST(test_get_tree_sibling_large)
 	ASSERT((long)get_tree_sibling(parent->child, 499) !=
 	       (long)parent->child);
 
-	/* Full wrap: offset == count returns to start */
 	ASSERT_EQ((long)get_tree_sibling(parent->child, 500),
 	          (long)parent->child);
 
@@ -332,17 +306,12 @@ TEST(test_readdir_offset_no_duplicates)
 		add_tree_node(parent, name, T_GENERIC, T_FILE, NULL, NULL);
 	}
 
-	/*
-	 * Walk like readdir and check for duplicate inodes.
-	 * This catches off-by-one errors in the circular list traversal.
-	 */
 	for (i = 0; i < 200; i++) {
 		if (i == 0)
 			n = parent->child;
 		else
 			n = get_tree_sibling(parent->child, i);
 
-		/* Check not seen before */
 		dup = 0;
 		for (j = 0; j < i; j++) {
 			if (seen[j] == n) {
@@ -359,8 +328,6 @@ TEST(test_readdir_offset_no_duplicates)
 	return 0;
 }
 
-/* --- Memory management tests --- */
-
 TEST(test_deleted_skip)
 {
 	struct inode *parent, *n;
@@ -370,15 +337,12 @@ TEST(test_deleted_skip)
 	n = add_tree_node(parent, "alive", T_GENERIC, T_FILE, NULL, NULL);
 	add_tree_node(parent, "dead", T_GENERIC, T_FILE, NULL, NULL);
 
-	/* mark "dead" as deleted */
 	afor(&get_tree_child(parent, "dead")->flags,
 	                  INODE_DELETED);
 
-	/* deleted nodes should be skipped */
 	ASSERT_NULL(get_tree_child(parent, "dead"));
 	ASSERT_EQ((long)get_tree_child(parent, "alive"), (long)n);
 
-	/* count should exclude deleted */
 	ASSERT_EQ(count_tree_children(parent), 1);
 
 	return 0;
@@ -403,10 +367,8 @@ TEST(test_ref_forget_keeps_cache)
 	tree_forget(n, 1);
 	ASSERT_EQ(n->nlookup, 0);
 
-	/* Live-ring node with nlookup==0 stays as cache entry: freeing
-	 * c->name eagerly here would race a concurrent get_tree_child
-	 * mid-strcmp. Re-lookup must hit the same inode and find a
-	 * still-valid name. */
+	/* nlookup 0 keeps a live-ring node cached: freeing its name would
+	 * race a get_tree_child() in the middle of strcmp() */
 	cached = get_tree_child(parent, "ref-child");
 	ASSERT_EQ((long)cached, (long)n);
 	ASSERT_STR_EQ(cached->name, "ref-child");
@@ -423,13 +385,8 @@ TEST(test_forget_preserves_name_on_live_ring)
 	n = add_tree_node(parent, "stable-name", T_GENERIC, T_FILE, NULL, NULL);
 
 	tree_ref(n);
-	tree_forget(n, 1);  /* nlookup → 0, node still in live ring */
+	tree_forget(n, 1);
 
-	/* The bug we're guarding: clear_node-on-forget freed n->name and
-	 * set it to NULL. A concurrent get_tree_child that had already
-	 * passed the is_dead check would then strcmp(NULL, ...) → strlen(NULL)
-	 * → segfault. Live-ring nodes must keep their name until the slot
-	 * is actually reclaimed via push_free (DETACHED + nlookup==0). */
 	ASSERT_NOT_NULL(n->name);
 	ASSERT_STR_EQ(n->name, "stable-name");
 
@@ -444,7 +401,6 @@ TEST(test_forget_static)
 	tree_ref(root);
 	tree_forget(root, 1);
 
-	/* Static node should survive */
 	ASSERT_NOT_NULL(get_tree_node(ROOT));
 	ASSERT_STR_EQ(root->name, "/");
 
@@ -461,14 +417,11 @@ TEST(test_forget_detached)
 	n = add_tree_node(parent, "orphan-child", T_GENERIC, T_FILE, NULL, NULL);
 	ino = n->ino;
 
-	/* detach from parent list */
 	tree_ref(n);
 	afor(&n->flags, INODE_DETACHED);
 
-	/* Forget should reclaim slot immediately */
 	tree_forget(n, 1);
 
-	/* Node should be on free list now */
 	ASSERT(aload(&free_next[ino]) != 0);
 
 	return 0;
@@ -487,15 +440,12 @@ TEST(test_free_retired)
 	ino1 = get_tree_child(parent, "r1")->ino;
 	ino2 = get_tree_child(parent, "r2")->ino;
 
-	/* swap out child list like opendir does */
 	old = axchg(&parent->child, NULL);
 	ASSERT_NOT_NULL(old);
 	ASSERT_EQ(count_tree_children(parent), 0);
 
-	/* Free retired list */
 	free_retired(old);
 
-	/* Slots should be back on free list */
 	ASSERT(aload(&free_next[ino1]) != 0);
 	ASSERT(aload(&free_next[ino2]) != 0);
 
@@ -512,21 +462,17 @@ TEST(test_rebuild_preserves_live)
 	live = add_tree_node(parent, "live-node", T_GENERIC, T_FILE, NULL, NULL);
 	add_tree_node(parent, "dead-node", T_GENERIC, T_FILE, NULL, NULL);
 
-	/* kernel looked up live-node */
 	tree_ref(live);
 	live_ino = live->ino;
 
-	/* Swap child list */
 	old = axchg(&parent->child, NULL);
 	free_retired(old);
 
-	/* live-node should be detached, not freed */
 	live = nodes + live_ino;
 	ASSERT_EQ(aload(&live->flags) & INODE_DETACHED,
 	          INODE_DETACHED);
 	ASSERT_EQ(aload(&live->nlookup), 1);
 
-	/* forgetting a detached node should reclaim it */
 	tree_forget(live, 1);
 	ASSERT(aload(&free_next[live_ino]) != 0);
 
@@ -542,7 +488,6 @@ TEST(test_pool_grow)
 	parent = add_tree_node(get_tree_node(ROOT), "grow-parent",
 	                       T_GENERIC, T_DIR, NULL, NULL);
 
-	/* Allocate more nodes than initial batch to trigger growth */
 	for (i = 0; i < 5000; i++) {
 		snprintf(name, sizeof(name), "grow-%04d", i);
 		n = add_tree_node(parent, name, T_GENERIC, T_FILE, NULL, NULL);
@@ -564,13 +509,10 @@ TEST(test_deleted_in_sibling_walk)
 	b = add_tree_node(parent, "sb", T_GENERIC, T_FILE, NULL, NULL);
 	add_tree_node(parent, "sc", T_GENERIC, T_FILE, NULL, NULL);
 
-	/* delete middle node */
 	afor(&b->flags, INODE_DELETED);
 
-	/* sibling walk should skip deleted nodes */
 	ASSERT_EQ(count_tree_children(parent), 2);
 
-	/* Verify both live nodes are reachable */
 	ASSERT_NOT_NULL(get_tree_child(parent, "sa"));
 	ASSERT_NOT_NULL(get_tree_child(parent, "sc"));
 
@@ -587,11 +529,9 @@ TEST(test_rebuild_restore_on_failure)
 
 	ASSERT_EQ(count_tree_children(parent), 1);
 
-	/* swap out child list like opendir does */
 	astore(&parent->retired, axchg(&parent->child, NULL));
 	ASSERT_EQ(count_tree_children(parent), 0);
 
-	/* simulate update failure: restore from retired */
 	astore(&parent->child, axchg(&parent->retired, NULL));
 	ASSERT_EQ(count_tree_children(parent), 1);
 
@@ -606,7 +546,6 @@ TEST(test_free_retired_skips_static)
 	struct inode *parent, *s, *old;
 	unsigned long s_ino;
 
-	/* create a parent with one dynamic child and one flagged as static */
 	parent = add_tree_node(get_tree_node(ROOT), "skip-static",
 	                       T_GENERIC, T_DIR, NULL, NULL);
 	s = add_tree_node(parent, "fake-static", T_GENERIC, T_FILE, NULL, NULL);
@@ -618,7 +557,6 @@ TEST(test_free_retired_skips_static)
 	old = axchg(&parent->child, NULL);
 	free_retired(old);
 
-	/* static-flagged node must not be freed */
 	s = nodes + s_ino;
 	ASSERT_EQ(aload(&free_next[s_ino]), 0);
 	ASSERT_STR_EQ(s->name, "fake-static");
@@ -626,13 +564,7 @@ TEST(test_free_retired_skips_static)
 	return 0;
 }
 
-/* --- Cursor walk tests (readdirplus pattern) --- */
-
-/*
- * Simulate the readdir cursor walk: start at head, advance via
- * sibling pointer, stop when wrapping back to head, skip dead nodes.
- * Returns the number of live nodes visited and fills seen[] with them.
- */
+/* walks p's children like gitfs_readdir(); returns the live ones */
 static int
 cursor_walk(struct inode *p, struct inode **seen, int max)
 {
@@ -682,7 +614,6 @@ TEST(test_cursor_walk_all_nodes)
 	count = cursor_walk(parent, seen, 200);
 	ASSERT_EQ(count, 200);
 
-	/* no duplicates */
 	for (i = 0; i < count; i++)
 		for (j = i + 1; j < count; j++)
 			if (seen[i] == seen[j])
@@ -708,7 +639,6 @@ TEST(test_cursor_walk_skip_dead)
 	count = cursor_walk(parent, seen, 4);
 	ASSERT_EQ(count, 2);
 
-	/* deleted node must not appear */
 	for (int i = 0; i < count; i++)
 		ASSERT(seen[i] != b);
 
@@ -765,14 +695,8 @@ TEST(test_cursor_walk_all_dead)
 	return 0;
 }
 
-/* --- Error path tests --- */
-
 TEST(test_get_tree_node_boundary)
 {
-	/*
-	 * nnodes = TOP_INODES + TREE_SIZE (100007).
-	 * Anything above that should return NULL.
-	 */
 	ASSERT_NULL(get_tree_node(200000));
 	ASSERT_NULL(get_tree_node((unsigned long)-1));
 
@@ -788,7 +712,6 @@ TEST(test_add_node_has_ops)
 	ASSERT_NOT_NULL(child);
 	ASSERT_NOT_NULL(child->ops);
 
-	/* Out-of-range type should give NULL ops */
 	ASSERT_NULL(get_inode_ops(T_ALL));
 	ASSERT_NULL(get_inode_ops(999));
 
@@ -801,11 +724,6 @@ TEST(test_tree_path_shallow)
 	struct inode *tree_out = NULL;
 	char path[512] = {0};
 
-	/*
-	 * tree_path on a T_TREE node whose parent is NOT T_TREE
-	 * should return immediately with empty path and set tree_out
-	 * to the node itself.
-	 */
 	parent = get_tree_node(HEAD);
 	tree_node = add_tree_node(parent, "shallow-tree", T_TREE, T_DIR, NULL, NULL);
 
@@ -826,10 +744,158 @@ TEST(test_count_children_after_dedup)
 	add_tree_node(parent, "x", T_GENERIC, T_DIR, NULL, NULL);
 	add_tree_node(parent, "y", T_GENERIC, T_DIR, NULL, NULL);
 
-	/* Adding duplicates should not increase count */
 	add_tree_node(parent, "x", T_GENERIC, T_DIR, NULL, NULL);
 	add_tree_node(parent, "y", T_GENERIC, T_DIR, NULL, NULL);
 	ASSERT_EQ(count_tree_children(parent), 2);
+
+	return 0;
+}
+
+static size_t
+live_inodes(void)
+{
+	struct tree_stats st;
+
+	tree_stats(&st);
+	return st.live;
+}
+
+TEST(test_stats_live_accounting)
+{
+	struct inode *parent, *held, *old;
+	size_t base;
+
+	base = live_inodes();
+
+	parent = add_tree_node(get_tree_node(ROOT), "stats-parent",
+	                       T_GENERIC, T_DIR, NULL, NULL);
+	add_tree_node(parent, "s1", T_GENERIC, T_FILE, NULL, NULL);
+	held = add_tree_node(parent, "s2", T_GENERIC, T_FILE, NULL, NULL);
+	/* existing name: no new inode */
+	add_tree_node(parent, "s1", T_GENERIC, T_FILE, NULL, NULL);
+	ASSERT_EQ(live_inodes(), base + 3);
+
+	/* s1 is freed right away, s2 waits for the kernel's forget */
+	tree_ref(held);
+	old = axchg(&parent->child, NULL);
+	free_retired(old);
+	ASSERT_EQ(live_inodes(), base + 2);
+
+	tree_forget(held, 1);
+	ASSERT_EQ(live_inodes(), base + 1);
+
+	return 0;
+}
+
+TEST(test_retire_frees_descendants)
+{
+	struct inode *parent, *idle, *held, *sub, *old;
+	char name[32];
+	size_t base;
+	int i;
+
+	parent = add_tree_node(get_tree_node(ROOT), "desc-parent",
+	                       T_GENERIC, T_DIR, NULL, NULL);
+	base = live_inodes();
+
+	idle = add_tree_node(parent, "idle", T_GENERIC, T_DIR, NULL, NULL);
+	held = add_tree_node(parent, "held", T_GENERIC, T_DIR, NULL, NULL);
+	sub = add_tree_node(idle, "sub", T_GENERIC, T_DIR, NULL, NULL);
+	for (i = 0; i < 16; i++) {
+		snprintf(name, sizeof(name), "f-%02d", i);
+		add_tree_node(sub, name, T_GENERIC, T_FILE, NULL, NULL);
+		add_tree_node(held, name, T_GENERIC, T_FILE, NULL, NULL);
+	}
+
+	tree_ref(held);
+	old = axchg(&parent->child, NULL);
+	free_retired(old);
+	tree_forget(held, 1);
+
+	if (live_inodes() != base)
+		FAIL("%zu descendant inodes leaked", live_inodes() - base);
+
+	return 0;
+}
+
+#define DEDUP_THREADS 8
+#define DEDUP_NAMES   256
+
+static pthread_barrier_t dedup_barrier;
+
+static void *
+dedup_worker(void *arg)
+{
+	struct inode *p = arg;
+	char name[32];
+	int i;
+
+	pthread_barrier_wait(&dedup_barrier);
+	for (i = 0; i < DEDUP_NAMES; i++) {
+		snprintf(name, sizeof(name), "d-%03d", i);
+		add_tree_node(p, name, T_GENERIC, T_FILE, NULL, NULL);
+	}
+	return NULL;
+}
+
+static int
+race_add_same_names(struct inode *p, size_t *ring, size_t *dead)
+{
+	pthread_t tid[DEDUP_THREADS];
+	struct inode *head, *c;
+	int i;
+
+	pthread_barrier_init(&dedup_barrier, NULL, DEDUP_THREADS);
+	for (i = 0; i < DEDUP_THREADS; i++)
+		if (pthread_create(&tid[i], NULL, dedup_worker, p))
+			return -1;
+	for (i = 0; i < DEDUP_THREADS; i++)
+		pthread_join(tid[i], NULL);
+	pthread_barrier_destroy(&dedup_barrier);
+
+	*ring = *dead = 0;
+	head = aload(&p->child);
+	c = head;
+	do {
+		(*ring)++;
+		if (aload(&c->flags) & INODE_DELETED)
+			(*dead)++;
+		c = aload(&c->sibling);
+	} while (c != head);
+
+	return 0;
+}
+
+/* dead duplicates are fine, unreachable inodes are not */
+TEST(test_concurrent_add_accounting)
+{
+	struct inode *p;
+	size_t base, ring, dead;
+
+	p = add_tree_node(get_tree_node(ROOT), "dedup-acct",
+	                  T_GENERIC, T_DIR, NULL, NULL);
+	base = live_inodes();
+
+	if (race_add_same_names(p, &ring, &dead))
+		FAIL("pthread_create failed");
+	ASSERT_EQ(live_inodes() - base, ring);
+
+	return 0;
+}
+
+TEST(test_concurrent_add_no_dups)
+{
+	struct inode *p;
+	size_t ring, dead;
+
+	p = add_tree_node(get_tree_node(ROOT), "dedup-dups",
+	                  T_GENERIC, T_DIR, NULL, NULL);
+
+	if (race_add_same_names(p, &ring, &dead))
+		FAIL("pthread_create failed");
+	if (ring - dead != DEDUP_NAMES)
+		FAIL("%zu live inodes for %d names",
+		     ring - dead, DEDUP_NAMES);
 
 	return 0;
 }
@@ -871,14 +937,12 @@ main(void)
 	RUN_TEST(test_tree_path_shallow);
 	RUN_TEST(test_count_children_after_dedup);
 
-	/* Cursor walk tests (readdirplus pattern) */
 	RUN_TEST(test_cursor_walk_all_nodes);
 	RUN_TEST(test_cursor_walk_skip_dead);
 	RUN_TEST(test_cursor_walk_empty);
 	RUN_TEST(test_cursor_walk_single);
 	RUN_TEST(test_cursor_walk_all_dead);
 
-	/* Memory management tests */
 	RUN_TEST(test_deleted_skip);
 	RUN_TEST(test_ref_forget_keeps_cache);
 	RUN_TEST(test_forget_preserves_name_on_live_ring);
@@ -890,6 +954,13 @@ main(void)
 	RUN_TEST(test_deleted_in_sibling_walk);
 	RUN_TEST(test_rebuild_restore_on_failure);
 	RUN_TEST(test_free_retired_skips_static);
+
+	RUN_TEST(test_stats_live_accounting);
+	RUN_TEST(test_concurrent_add_accounting);
+	RUN_XFAIL(test_concurrent_add_no_dups,
+	          "add_tree_node() dedup keeps racing inserts alive");
+	RUN_XFAIL(test_retire_frees_descendants,
+	          "push_free() drops the subtree of a retired node");
 
 	/* must be last: tears down the pool */
 	RUN_TEST(test_tree_destroy);
