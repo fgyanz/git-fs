@@ -1,15 +1,6 @@
 #!/bin/sh
-# Kernel-scale stress test for git-fs.
-#
-# Sets up a `git clone --shared --no-checkout` of a source repo
-# (default: ~/src/linux) into a temp workspace and runs the stress
-# test against it with kernel-scale defaults: 64 workers, 200 commits
-# sampled at random per round, churn enabled, 2h duration.
-#
-# The shared clone reuses the source's pack files via objects/info/
-# alternates — instant setup, ~MB on disk. Mutations happen only on
-# the clone; the source is never modified. The workspace is rm -rf'd
-# on exit regardless of how the test finishes.
+# Kernel-scale stress test for git-fs: runs test_stress.sh with churn
+# on a shared clone of SRC, so the source repo is never modified.
 #
 # Environment overrides:
 #   SRC             - source repo to clone (default: $HOME/src/linux)
@@ -21,13 +12,11 @@
 
 set -e
 
-SRC="${SRC:-$HOME/src/linux}"
-GITFS="${GITFS:-./git-fs}"
+. "$(dirname "$0")/lib.sh"
+use_gitfs "${GITFS:-./git-fs}"
 
-if [ ! -x "$GITFS" ]; then
-	echo "error: $GITFS not found or not executable" >&2
-	exit 1
-fi
+SRC="${SRC:-$HOME/src/linux}"
+
 if [ ! -d "$SRC/.git" ] && [ ! -d "$SRC" ]; then
 	echo "error: SRC=$SRC is not a git repository" >&2
 	exit 1
@@ -37,28 +26,22 @@ if ! git -C "$SRC" rev-parse --git-dir > /dev/null 2>&1; then
 	exit 1
 fi
 
-WORKSPACE=$(mktemp -d "${TMPDIR:-/tmp}/git-fs-kernel-stress-XXXXXX")
-trap 'rm -rf "$WORKSPACE"' EXIT
+WORKSPACE="$TESTDIR"
 
 echo "test_kernel_stress:"
 echo "  source: $SRC"
 echo "  workspace: $WORKSPACE"
 echo "  cloning (shared, no-checkout)..."
 
-# --shared makes the clone use the source's object store via alternates
-# (no copy). --no-checkout skips populating the working tree.
 git clone --shared --no-checkout --quiet "$SRC" "$WORKSPACE/repo"
 
-# count what we got
 n_commits=$(git -C "$WORKSPACE/repo" rev-list --all 2>/dev/null | wc -l)
 n_tags=$(git -C "$WORKSPACE/repo" tag -l 2>/dev/null | wc -l)
 n_branches=$(git -C "$WORKSPACE/repo" for-each-ref --format='%(refname)' \
 	refs/heads/ refs/remotes/ 2>/dev/null | wc -l)
 echo "  clone: $n_commits commits, $n_tags tags, $n_branches branches/remotes"
 
-# note: do NOT exec — the EXIT trap on this shell is what cleans up
-# $WORKSPACE. exec would replace this shell with test_stress.sh and
-# the trap would never fire.
+# no exec: lib.sh's EXIT trap removes the clone
 REPO="$WORKSPACE/repo" \
 DURATION="${DURATION:-2h}" \
 WORKERS="${WORKERS:-64}" \
