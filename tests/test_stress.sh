@@ -522,11 +522,13 @@ worker_refs() {
 # bugs, but a shared-fd path (multiple kernel readers consuming a single
 # open file description) exercises per-gitfs_fh state in a way that
 # independent fds don't. Open a moderately-sized blob once via exec 3<,
-# then spawn N background cats reading from <&3. The kernel serializes
-# their reads on the shared file position, so each gets a contiguous
-# slice and the union covers the file exactly. We verify the sum of
-# slice sizes equals the file size — torn or duplicated bytes from a
-# broken concurrent-read path would change that sum.
+# then spawn N background readers on <&3. The kernel serializes their
+# read()s on the shared file position, so each gets a contiguous slice
+# and the union covers the file exactly. We verify the sum of slice
+# sizes equals the file size — torn or duplicated bytes from a broken
+# concurrent-read path would change that sum. The readers are dd, not
+# cat: GNU cat 9.11 sometimes reads a shared fd twice, even on local
+# filesystems.
 worker_same_fh() {
 	set +e
 	wid=$1; sha=$2; round=$3
@@ -564,12 +566,12 @@ worker_same_fh() {
 		out2="$WORK_DIR/F-$round-$wid-$i-2"
 		out3="$WORK_DIR/F-$round-$wid-$i-3"
 
-		# fd 3 is shared across the three forked cats; the kernel
+		# fd 3 is shared across the three forked readers; the kernel
 		# arbitrates the position, each gets a disjoint slice.
 		exec 3< "$fpath"
-		cat <&3 > "$out1" &
-		cat <&3 > "$out2" &
-		cat <&3 > "$out3" &
+		dd bs=128K status=none <&3 > "$out1" &
+		dd bs=128K status=none <&3 > "$out2" &
+		dd bs=128K status=none <&3 > "$out3" &
 		wait
 		exec 3<&-
 
