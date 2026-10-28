@@ -340,26 +340,20 @@ assert_ne "$NEW_HEAD" "$OLD_HEAD" "head_refresh_after_commit"
 NEW_HEAD_MSG=$(cat "$MNT/HEAD/msg")
 assert_contains "$NEW_HEAD_MSG" "post-mount commit" "head_refresh_msg"
 
-fusermount3 -u "$MNT"
-assert_eq "$?" "0" "unmount_succeeds"
+assert_ok "fusermount3 -u '$MNT'" "unmount_succeeds"
 
 (cd "$REPO" && "$GITFS" -m "$MNT")
 wait_mount "$MNT" || true
-ls "$MNT/HEAD" > /dev/null 2>&1
-assert_eq "$?" "0" "remount_for_unmount_test"
+assert_ok "ls '$MNT/HEAD'" "remount_for_unmount_test"
 
-"$GITFS" -u "$MNT"
-assert_eq "$?" "0" "unmount_flag_short"
-sleep 0.3
+assert_ok "'$GITFS' -u '$MNT'" "unmount_flag_short"
 MOUNTED=0; grep -q "$MNT" /proc/mounts && MOUNTED=1
 assert_eq "$MOUNTED" "0" "unmount_flag_short_verified"
 
 (cd "$REPO" && "$GITFS" -m "$MNT")
 wait_mount "$MNT" || true
 
-"$GITFS" --unmount "$MNT"
-assert_eq "$?" "0" "unmount_flag_long"
-sleep 0.3
+assert_ok "'$GITFS' --unmount '$MNT'" "unmount_flag_long"
 MOUNTED=0; grep -q "$MNT" /proc/mounts && MOUNTED=1
 assert_eq "$MOUNTED" "0" "unmount_flag_long_verified"
 
@@ -369,11 +363,8 @@ assert_eq "$BAD_RET" "1" "unmount_bad_path"
 DEFAULT_MNT="${REPO}/.git/fs"
 (cd "$REPO" && "$GITFS")
 wait_mount "$DEFAULT_MNT" || true
-ls "$DEFAULT_MNT/HEAD" > /dev/null 2>&1
-assert_eq "$?" "0" "unmount_default_setup"
-(cd "$REPO" && "$GITFS" -u)
-assert_eq "$?" "0" "unmount_no_path"
-sleep 0.3
+assert_ok "ls '$DEFAULT_MNT/HEAD'" "unmount_default_setup"
+assert_ok "cd '$REPO' && '$GITFS' -u" "unmount_no_path"
 MOUNTED=0; grep -q "$DEFAULT_MNT" /proc/mounts && MOUNTED=1
 assert_eq "$MOUNTED" "0" "unmount_no_path_verified"
 rmdir "$DEFAULT_MNT" 2>/dev/null || true
@@ -382,8 +373,7 @@ NEW_MNT="$TESTDIR/new-mnt"
 (cd "$REPO" && "$GITFS" -m "$NEW_MNT")
 wait_mount "$NEW_MNT" || true
 assert_eq "$(test -d "$NEW_MNT" && echo yes)" "yes" "mkdir_creates_mountpoint"
-ls "$NEW_MNT/HEAD" > /dev/null 2>&1
-assert_eq "$?" "0" "mkdir_mount_works"
+assert_ok "ls '$NEW_MNT/HEAD'" "mkdir_mount_works"
 fusermount3 -u "$NEW_MNT"
 rmdir "$NEW_MNT"
 
@@ -392,8 +382,7 @@ rm -rf "$DEFAULT_MNT"
 (cd "$REPO" && "$GITFS")
 wait_mount "$DEFAULT_MNT" || true
 assert_eq "$(test -d "$DEFAULT_MNT" && echo yes)" "yes" "mkdir_default_created"
-ls "$DEFAULT_MNT/HEAD" > /dev/null 2>&1
-assert_eq "$?" "0" "mkdir_default_mount_works"
+assert_ok "ls '$DEFAULT_MNT/HEAD'" "mkdir_default_mount_works"
 fusermount3 -u "$DEFAULT_MNT"
 rmdir "$DEFAULT_MNT"
 
@@ -401,8 +390,7 @@ EXIST_MNT="$TESTDIR/exist-mnt"
 mkdir "$EXIST_MNT"
 (cd "$REPO" && "$GITFS" -m "$EXIST_MNT")
 wait_mount "$EXIST_MNT" || true
-ls "$EXIST_MNT/HEAD" > /dev/null 2>&1
-assert_eq "$?" "0" "mkdir_existing_dir_works"
+assert_ok "ls '$EXIST_MNT/HEAD'" "mkdir_existing_dir_works"
 fusermount3 -u "$EXIST_MNT"
 rmdir "$EXIST_MNT"
 

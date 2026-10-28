@@ -109,6 +109,14 @@ assert_fail() {
 	fi
 }
 
+assert_ok() {
+	if _err=$(eval "$1" 2>&1 > /dev/null); then
+		pass "$2"
+	else
+		fail "$2" "${_err:-command failed}"
+	fi
+}
+
 summary() {
 	echo
 	printf "%d/%d tests passed" "$PASS" $((PASS + FAIL + XFAIL))
