@@ -346,14 +346,14 @@ assert_ok "fusermount3 -u '$MNT'" "unmount_succeeds"
 wait_mount "$MNT" || true
 assert_ok "ls '$MNT/HEAD'" "remount_for_unmount_test"
 
-assert_ok "'$GITFS' -u '$MNT'" "unmount_flag_short"
+assert_ok "retry_umount '$GITFS' -u '$MNT'" "unmount_flag_short"
 MOUNTED=0; grep -q "$MNT" /proc/mounts && MOUNTED=1
 assert_eq "$MOUNTED" "0" "unmount_flag_short_verified"
 
 (cd "$REPO" && "$GITFS" -m "$MNT")
 wait_mount "$MNT" || true
 
-assert_ok "'$GITFS' --unmount '$MNT'" "unmount_flag_long"
+assert_ok "retry_umount '$GITFS' --unmount '$MNT'" "unmount_flag_long"
 MOUNTED=0; grep -q "$MNT" /proc/mounts && MOUNTED=1
 assert_eq "$MOUNTED" "0" "unmount_flag_long_verified"
 
@@ -364,7 +364,7 @@ DEFAULT_MNT="${REPO}/.git/fs"
 (cd "$REPO" && "$GITFS")
 wait_mount "$DEFAULT_MNT" || true
 assert_ok "ls '$DEFAULT_MNT/HEAD'" "unmount_default_setup"
-assert_ok "cd '$REPO' && '$GITFS' -u" "unmount_no_path"
+assert_ok "cd '$REPO' && retry_umount '$GITFS' -u" "unmount_no_path"
 MOUNTED=0; grep -q "$DEFAULT_MNT" /proc/mounts && MOUNTED=1
 assert_eq "$MOUNTED" "0" "unmount_no_path_verified"
 rmdir "$DEFAULT_MNT" 2>/dev/null || true
@@ -374,7 +374,7 @@ NEW_MNT="$TESTDIR/new-mnt"
 wait_mount "$NEW_MNT" || true
 assert_eq "$(test -d "$NEW_MNT" && echo yes)" "yes" "mkdir_creates_mountpoint"
 assert_ok "ls '$NEW_MNT/HEAD'" "mkdir_mount_works"
-fusermount3 -u "$NEW_MNT"
+retry_umount fusermount3 -u "$NEW_MNT"
 rmdir "$NEW_MNT"
 
 DEFAULT_MNT="${REPO}/.git/fs"
@@ -383,7 +383,7 @@ rm -rf "$DEFAULT_MNT"
 wait_mount "$DEFAULT_MNT" || true
 assert_eq "$(test -d "$DEFAULT_MNT" && echo yes)" "yes" "mkdir_default_created"
 assert_ok "ls '$DEFAULT_MNT/HEAD'" "mkdir_default_mount_works"
-fusermount3 -u "$DEFAULT_MNT"
+retry_umount fusermount3 -u "$DEFAULT_MNT"
 rmdir "$DEFAULT_MNT"
 
 EXIST_MNT="$TESTDIR/exist-mnt"
@@ -391,7 +391,7 @@ mkdir "$EXIST_MNT"
 (cd "$REPO" && "$GITFS" -m "$EXIST_MNT")
 wait_mount "$EXIST_MNT" || true
 assert_ok "ls '$EXIST_MNT/HEAD'" "mkdir_existing_dir_works"
-fusermount3 -u "$EXIST_MNT"
+retry_umount fusermount3 -u "$EXIST_MNT"
 rmdir "$EXIST_MNT"
 
 summary

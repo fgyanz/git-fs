@@ -17,7 +17,7 @@ cleanup() {
 	fi
 	awk -v d="$TESTDIR" 'index($2, d) == 1 { print $2 }' /proc/mounts |
 	while IFS= read -r m; do
-		fusermount3 -u "$m" 2>/dev/null || true
+		retry_umount fusermount3 -u "$m" 2>/dev/null || true
 	done
 	rm -rf "$TESTDIR"
 }
@@ -161,8 +161,17 @@ mount_gitfs() {
 	fi
 }
 
+# gvfsd-trash probes new mounts, and unmounting meanwhile gets EBUSY
+retry_umount() {
+	for _ in 1 2 3 4 5 6 7 8 9; do
+		"$@" 2>/dev/null && return 0
+		sleep 0.1
+	done
+	"$@"
+}
+
 umount_gitfs() {
-	fusermount3 -u "$1" 2>/dev/null || true
+	retry_umount fusermount3 -u "$1" 2>/dev/null || true
 	if [ -n "$GITFS_PID" ]; then
 		wait "$GITFS_PID" 2>/dev/null || true
 	fi
