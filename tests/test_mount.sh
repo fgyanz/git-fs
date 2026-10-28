@@ -225,45 +225,45 @@ NEW_TAG_LS=$(ls "$MNT/tags/")
 assert_contains "$NEW_TAG_LS" "v2.0" "ref_refresh_new_tag"
 
 for i in 1 2 3 4 5 6 7 8; do
-	cat "$MNT/HEAD/tree/manyfiles/f-$(printf '%03d' $((i * 60))).txt" > $TESTDIR/par-$i &
+	cat "$MNT/HEAD/tree/manyfiles/f-$(printf '%03d' $((i * 60))).txt" > "$TESTDIR/par-$i" &
 done
 wait
 PAR_OK=1
 for i in 1 2 3 4 5 6 7 8; do
 	expected="content-$(printf '%03d' $((i * 60)))"
-	got=$(cat $TESTDIR/par-$i)
-	rm -f $TESTDIR/par-$i
+	got=$(cat "$TESTDIR/par-$i")
+	rm -f "$TESTDIR/par-$i"
 	if [ "$got" != "$expected" ]; then PAR_OK=0; fi
 done
 assert_eq "$PAR_OK" "1" "concurrent_parallel_reads"
 
 for i in 1 2 3 4; do
-	ls -1 "$MNT/HEAD/tree/manyfiles/" | sort > $TESTDIR/ls-$i &
+	ls -1 "$MNT/HEAD/tree/manyfiles/" | sort > "$TESTDIR/ls-$i" &
 done
 wait
 LSREF=$(ls -1 "$MNT/HEAD/tree/manyfiles/" | sort)
 LS_OK=1
 for i in 1 2 3 4; do
-	got=$(cat $TESTDIR/ls-$i)
-	rm -f $TESTDIR/ls-$i
+	got=$(cat "$TESTDIR/ls-$i")
+	rm -f "$TESTDIR/ls-$i"
 	if [ "$got" != "$LSREF" ]; then LS_OK=0; fi
 done
 assert_eq "$LS_OK" "1" "concurrent_parallel_readdir"
 
 ls "$MNT/branches/heads/" > /dev/null &
 PID1=$!
-cat "$MNT/HEAD/tree/file.txt" > $TESTDIR/mix-1 &
+cat "$MNT/HEAD/tree/file.txt" > "$TESTDIR/mix-1" &
 PID2=$!
-ls -1 "$MNT/HEAD/tree/manyfiles/" > $TESTDIR/mix-2 &
+ls -1 "$MNT/HEAD/tree/manyfiles/" > "$TESTDIR/mix-2" &
 PID3=$!
-cat "$MNT/tags/v1.0/hash" > $TESTDIR/mix-3 &
+cat "$MNT/tags/v1.0/hash" > "$TESTDIR/mix-3" &
 PID4=$!
 wait $PID1 $PID2 $PID3 $PID4
-assert_eq "$(cat $TESTDIR/mix-1)" "hello" "concurrent_mixed_read"
-MIX_LS=$(wc -l < $TESTDIR/mix-2)
+assert_eq "$(cat "$TESTDIR/mix-1")" "hello" "concurrent_mixed_read"
+MIX_LS=$(wc -l < "$TESTDIR/mix-2")
 assert_eq "$MIX_LS" "500" "concurrent_mixed_readdir"
-assert_match "$(cat $TESTDIR/mix-3)" "^[0-9a-f]{40}$" "concurrent_mixed_hash"
-rm -f $TESTDIR/mix-1 $TESTDIR/mix-2 $TESTDIR/mix-3
+assert_match "$(cat "$TESTDIR/mix-3")" "^[0-9a-f]{40}$" "concurrent_mixed_hash"
+rm -f "$TESTDIR/mix-1" "$TESTDIR/mix-2" "$TESTDIR/mix-3"
 
 HEAD_COMMIT_TIME=$(cd "$REPO" && git log -1 --format='%ct' HEAD)
 STAT_MTIME=$(stat -c '%Y' "$MNT/HEAD/tree/file.txt")

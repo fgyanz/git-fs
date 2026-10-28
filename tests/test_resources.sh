@@ -104,6 +104,7 @@ read_files() {
 # a holder that fails to open leaves one line in holders.err
 hold_files() {
 	while IFS= read -r f; do
+		# shellcheck disable=SC2217
 		(exec sleep 600 < "$f") 2>> "$TESTDIR/holders.err" &
 		HOLDERS="$HOLDERS $!"
 	done < "$1"

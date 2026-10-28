@@ -44,7 +44,7 @@ duration_to_seconds() {
 	while [ -n "$rem" ]; do
 		num=$(echo "$rem" | sed -n 's/^\([0-9][0-9]*\).*/\1/p')
 		[ -z "$num" ] && return 1
-		rest=${rem#$num}
+		rest=${rem#"$num"}
 		unit=$(echo "$rest" | cut -c1)
 		case "$unit" in
 			h) total=$((total + num * 3600)) ;;
@@ -325,7 +325,7 @@ worker_parent_chain() {
 	cfile_p="$WORK_DIR/pass-D-$round-$wid"
 	cfile_f="$WORK_DIR/fail-D-$round-$wid"
 
-	head_sha=$(cat "$MNT/HEAD/hash" 2>/dev/null | tr -d '\n')
+	head_sha=$(tr -d '\n' 2>/dev/null < "$MNT/HEAD/hash")
 	if [ -z "$head_sha" ]; then
 		echo "FAIL parent chain: cannot read MNT/HEAD/hash" >> "$ERR_LOG"
 		count 0; write_counts; return
@@ -398,7 +398,7 @@ worker_refs() {
 			# deleted by the churner
 			continue
 		fi
-		captured=$(cat "$bpath/hash" 2>/dev/null | tr -d '\n')
+		captured=$(tr -d '\n' 2>/dev/null < "$bpath/hash")
 		if [ -z "$captured" ]; then
 			echo "FAIL branch $brname: cannot read $bpath/hash" >> "$ERR_LOG"
 			count 0; continue
@@ -428,7 +428,7 @@ worker_refs() {
 			# deleted by the churner
 			continue
 		fi
-		captured=$(cat "$tpath/hash" 2>/dev/null | tr -d '\n')
+		captured=$(tr -d '\n' 2>/dev/null < "$tpath/hash")
 		if [ -z "$captured" ]; then
 			echo "FAIL tag $tag: cannot read $tpath/hash" >> "$ERR_LOG"
 			count 0; continue
@@ -840,10 +840,9 @@ print_gitfs_diagnostics() {
 	fi
 	echo ""
 	echo "=== recent dmesg (fuse/oom/git-fs) ==="
-	dmesg --time-format=iso 2>/dev/null \
-		| grep -iE 'fuse|oom|killed|git-fs' \
-		| tail -10
-	if [ $? -ne 0 ]; then
+	if dmesg_out=$(dmesg --time-format=iso 2>/dev/null); then
+		echo "$dmesg_out" | grep -iE 'fuse|oom|killed|git-fs' | tail -10
+	else
 		echo "(dmesg unavailable; for next run: sudo sh -c 'echo 0 > /proc/sys/kernel/dmesg_restrict')"
 	fi
 	echo ""

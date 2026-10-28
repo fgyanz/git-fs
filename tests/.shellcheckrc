@@ -1,0 +1,3 @@
+# ls is how the tests exercise readdir
+disable=SC2010,SC2012
+source-path=SCRIPTDIR

@@ -134,9 +134,12 @@ make test             # unit, mount, and fd/memory tests
 make test-asan        # the same under ASan/LSan/UBSan
 make test-tsan        # the same under ThreadSanitizer
 make stress           # concurrent data integrity checks
+make lint             # shellcheck the shell tests
 ```
 
 Shell tests share `tests/lib.sh`; C unit tests use `tests/harness.h`.
+The shell tests need git, fusermount3, and GNU coreutils and
+findutils.
 
 `tests/test_resources.sh` measures git-fs through `/proc` while driving
 workloads against a mount: fds are given back after use, memory
