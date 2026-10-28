@@ -441,6 +441,10 @@ tree_destroy(void)
 	munmap(free_next, nmax * sizeof(*free_next));
 	free(batch_nfree);
 	nodes = NULL;
+	free_next = NULL;
+	batch_nfree = NULL;
+	ftop_ino = 0;
+	nhwm = 0;
 	nlive = 0;
 }
 
