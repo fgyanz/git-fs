@@ -1,3 +1,4 @@
+# shellcheck shell=sh
 # Shared helpers for the git-fs shell tests. Everything a test creates
 # goes under TESTDIR, unmounted and removed on exit after the test's own
 # test_cleanup, if it defines one.
@@ -126,7 +127,7 @@ summary() {
 }
 
 new_repo() {
-	git init -q "$1"
+	git init -q -b master "$1"
 	git -C "$1" config user.email "test@test"
 	git -C "$1" config user.name "test"
 }
@@ -148,6 +149,7 @@ wait_mount() {
 # git-fs itself and its stderr lands in GITFS_LOG
 mount_gitfs() {
 	(
+		# shellcheck disable=SC3045
 		[ -n "$3" ] && ulimit -n "$3"
 		cd "$1" && exec "$GITFS" -f -m "$2"
 	) 2>> "$GITFS_LOG" &

@@ -65,6 +65,9 @@ stress-kernel: $(BIN)
 resources: $(BIN)
 	REPO=$(REPO) ./tests/test_resources.sh
 
+lint:
+	shellcheck tests/*.sh
+
 test-asan:
 	$(MAKE) sanitize SAN=asan SANITIZE=address,undefined
 
