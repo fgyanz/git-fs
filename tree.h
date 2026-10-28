@@ -1,6 +1,12 @@
 #ifndef TREE_H
 #define TREE_H
 
+struct tree_stats {
+	size_t live;      /* allocated non-static inodes */
+	size_t hwm;       /* inodes ever brought into the pool */
+	size_t capacity;
+};
+
 extern int tree_init(void);
 extern struct inode *get_tree_node(unsigned long);
 extern struct inode *get_tree_child(struct inode *, const char *);
@@ -14,5 +20,6 @@ extern void tree_path(struct inode *, char *, size_t, struct inode **);
 extern void tree_ref(struct inode *);
 extern void tree_forget(struct inode *, unsigned long);
 extern void free_retired(struct inode *);
+extern void tree_stats(struct tree_stats *);
 extern void tree_destroy(void);
 #endif
