@@ -48,9 +48,27 @@ static char fail_msg[1024];
 
 #define TEST(name) static int name(void)
 
+static int (*test_setup)(void);
+static void (*test_teardown)(void);
+
+static int
+run_test(int (*fn)(void), const char *name)
+{
+	int ret;
+
+	if (test_setup && test_setup()) {
+		fprintf(stderr, "  %s: setup failed\n", name);
+		exit(EXIT_FAILURE);
+	}
+	ret = fn();
+	if (test_teardown)
+		test_teardown();
+	return ret;
+}
+
 #define RUN_TEST(fn) do { \
 	tests_run++; \
-	if (fn()) { \
+	if (run_test(fn, #fn)) { \
 		tests_failed++; \
 		fprintf(stderr, "  FAIL %-34s  %s\n", #fn, fail_msg); \
 	} else { \
@@ -61,7 +79,7 @@ static char fail_msg[1024];
 /* known bug: only an unexpected pass fails the suite */
 #define RUN_XFAIL(fn, reason) do { \
 	tests_run++; \
-	if (fn()) { \
+	if (run_test(fn, #fn)) { \
 		tests_xfailed++; \
 		fprintf(stderr, "  XFAIL %-33s  %s\n", #fn, fail_msg); \
 		fprintf(stderr, "        %-33s  known: %s\n", "", reason); \

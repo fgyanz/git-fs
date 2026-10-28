@@ -914,10 +914,8 @@ main(void)
 {
 	fprintf(stderr, "test_tree:\n");
 
-	if (tree_init()) {
-		fprintf(stderr, "tree_init failed\n");
-		return EXIT_FAILURE;
-	}
+	test_setup = tree_init;
+	test_teardown = tree_destroy;
 
 	RUN_TEST(test_tree_init);
 	RUN_TEST(test_tree_init_children_findable);
@@ -962,8 +960,6 @@ main(void)
 	          "add_tree_node() dedup keeps racing inserts alive");
 	RUN_XFAIL(test_retire_frees_descendants,
 	          "push_free() drops the subtree of a retired node");
-
-	/* must be last: tears down the pool */
 	RUN_TEST(test_tree_destroy);
 
 	TEST_SUMMARY();

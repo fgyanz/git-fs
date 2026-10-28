@@ -1311,15 +1311,13 @@ main(void)
 	if (!repo_path)
 		return EXIT_FAILURE;
 
-	if (tree_init()) {
-		fprintf(stderr, "tree_init failed\n");
-		goto out;
-	}
-
 	if (git_repository_open(&repo, repo_path)) {
 		fprintf(stderr, "git_repository_open failed\n");
 		goto out;
 	}
+
+	test_setup = tree_init;
+	test_teardown = tree_destroy;
 
 	RUN_TEST(test_update_branches);
 	RUN_TEST(test_lookup_branches);
@@ -1372,7 +1370,6 @@ main(void)
 	if (test_odb)
 		git_odb_free(test_odb);
 	git_repository_free(repo);
-	tree_destroy();
 out:
 	cleanup_test_repo(repo_path);
 	git_libgit2_shutdown();
