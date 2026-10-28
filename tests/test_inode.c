@@ -8,7 +8,7 @@
 static git_repository *repo;
 static git_odb *test_odb;
 
-/* stub for inode.c's get_gitfs_odb() — uses the test repo */
+/* what git-fs.c provides to inode.c, backed by the test repo */
 git_odb *
 get_gitfs_odb(void)
 {
@@ -19,20 +19,14 @@ get_gitfs_odb(void)
 	return test_odb;
 }
 
-/* stub for inode.c's get_gitfs_repo() — returns the test repo */
 git_repository *
 get_gitfs_repo(void)
 {
 	return repo;
 }
 
-/* Declared in inode.c */
 extern struct inode_ops *get_inode_ops(unsigned);
 
-/*
- * Helper: run a shell command in the test repo directory.
- * Returns 0 on success.
- */
 static int
 run_cmd(const char *repo_path, const char *cmd)
 {
@@ -44,15 +38,6 @@ run_cmd(const char *repo_path, const char *cmd)
 	return system(buf);
 }
 
-/*
- * Create a temporary git repo with known state:
- *   - Two commits ("first commit", "second commit")
- *   - file.txt with "hello\n" (first commit)
- *   - file2.txt with "world\n" (second commit)
- *   - Tag v1.0 on second commit
- *   - Branch "feature" on second commit
- *   - A bare clone as "origin" remote with tracking branches
- */
 static char repo_path[] = "/tmp/git-fs-test-XXXXXX";
 static char bare_path[] = "/tmp/git-fs-bare-XXXXXX";
 
@@ -83,7 +68,6 @@ create_test_repo(void)
 		return NULL;
 	}
 
-	/* Create bare clone and add as remote for tracking branches */
 	if (!mkdtemp(bare_path)) {
 		perror("mkdtemp bare");
 		return NULL;
@@ -110,13 +94,10 @@ cleanup_test_repo(const char *path)
 	char cmd[4096];
 
 	snprintf(cmd, sizeof(cmd), "rm -rf '%s' '%s'", path, bare_path);
-	system(cmd);
+	if (system(cmd))
+		fprintf(stderr, "failed to remove %s\n", path);
 }
 
-/*
- * Helper: get the HEAD inode with its oid and mtime populated, mirroring
- * what update_head does at mount time.
- */
 static struct inode *
 head_commit_inode(void)
 {
@@ -143,7 +124,6 @@ head_commit_inode(void)
 	return n;
 }
 
-/* Look up a commit by oid and return its commit_time, or 0 on error. */
 static git_time_t
 commit_time_by_oid(const git_oid *oid)
 {
@@ -156,8 +136,6 @@ commit_time_by_oid(const git_oid *oid)
 	git_commit_free(c);
 	return t;
 }
-
-/* --- Tree structure tests (branches, tags, remotes) --- */
 
 TEST(test_update_branches)
 {
@@ -173,10 +151,8 @@ TEST(test_update_branches)
 	ASSERT_EQ(ops->update(repo, heads), 0);
 
 	count = count_tree_children(heads);
-	/* At least "master"/"main" and "feature" */
 	ASSERT(count >= 2);
 
-	/* "feature" branch should exist */
 	n = get_tree_child(heads, "feature");
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->type, T_COMMIT);
@@ -198,7 +174,6 @@ TEST(test_lookup_branches)
 	ASSERT_EQ(n->type, T_COMMIT);
 	ASSERT(n->mtime > 0);
 
-	/* Non-existent branch */
 	n = ops->lookup(repo, heads, "no-such-branch");
 	ASSERT_NULL(n);
 
@@ -243,8 +218,6 @@ TEST(test_lookup_tags)
 	return 0;
 }
 
-/* --- Commit tests --- */
-
 TEST(test_update_commit)
 {
 	struct inode *head, *n;
@@ -256,7 +229,6 @@ TEST(test_update_commit)
 	ops = get_inode_ops(T_COMMIT);
 	ASSERT_EQ(ops->update(repo, head), 0);
 
-	/* Should have: tree, hash, msg, parent */
 	n = get_tree_child(head, "tree");
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->type, T_TREE);
@@ -319,13 +291,7 @@ TEST(test_lookup_commit_prefix_rejected)
 
 	ops = get_inode_ops(T_COMMIT);
 
-	/*
-	 * The strncmp bug: lookup_commit uses strncmp with strlen(d->name)
-	 * as the length. Short prefixes ("tr") are rejected by strncmp
-	 * because the null in "tr" differs from 'e' in "tree". But longer
-	 * strings that START with a dentry name should NOT match either.
-	 * e.g., "trees" should not match "tree".
-	 */
+	/* names that only start with an entry's name must not match */
 	n = ops->lookup(repo, head, "trees");
 	ASSERT_NULL(n);
 
@@ -338,7 +304,6 @@ TEST(test_lookup_commit_prefix_rejected)
 	n = ops->lookup(repo, head, "parenting");
 	ASSERT_NULL(n);
 
-	/* Non-existent entry */
 	n = ops->lookup(repo, head, "nonexistent");
 	ASSERT_NULL(n);
 
@@ -355,24 +320,16 @@ TEST(test_root_commit_parent)
 
 	ops = get_inode_ops(T_COMMIT);
 
-	/* Navigate to parent (first commit = root commit) */
 	ASSERT_EQ(ops->update(repo, head), 0);
 	parent_node = get_tree_child(head, "parent");
 	ASSERT_NOT_NULL(parent_node);
 	ASSERT(parent_node->mtime > 0);
 
-	/*
-	 * The root commit has no parent. update_commit on the root
-	 * commit should NOT fail — it should gracefully handle the
-	 * missing parent (e.g., skip or create an empty parent entry).
-	 */
 	root_commit = parent_node;
 	ASSERT_EQ(ops->update(repo, root_commit), 0);
 
 	return 0;
 }
-
-/* --- Tree (file listing) tests --- */
 
 TEST(test_update_tree)
 {
@@ -391,8 +348,6 @@ TEST(test_update_tree)
 	tree_ops = get_inode_ops(T_TREE);
 	ASSERT_EQ(tree_ops->update(repo, tree_node), 0);
 
-	/* Should contain file.txt and file2.txt with sizes set. Size
-	 * comes from git_odb_read_header, not from loading the blob. */
 	n = get_tree_child(tree_node, "file.txt");
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->mode, T_FILE);
@@ -427,14 +382,11 @@ TEST(test_lookup_tree)
 	ASSERT_EQ(n->mode, T_FILE);
 	ASSERT(n->size > 0);
 
-	/* Non-existent */
 	n = tree_ops->lookup(repo, tree_node, "no-such-file");
 	ASSERT_NULL(n);
 
 	return 0;
 }
-
-/* --- File open tests --- */
 
 TEST(test_open_hash)
 {
@@ -464,11 +416,9 @@ TEST(test_open_hash)
 	close(fd);
 
 	ASSERT(n > 0);
-	/* Should be 40 hex chars + newline */
 	ASSERT_EQ(n, 41);
 	ASSERT_EQ(buf[40], '\n');
 
-	/* Verify it's valid hex */
 	for (int i = 0; i < 40; i++) {
 		char c = buf[i];
 		ASSERT((c >= '0' && c <= '9') ||
@@ -506,7 +456,6 @@ TEST(test_open_msg)
 	close(fd);
 
 	ASSERT(n > 0);
-	/* Should contain "second commit" */
 	ASSERT(strstr(buf, "second commit") != NULL);
 
 	return 0;
@@ -564,17 +513,13 @@ TEST(test_get_node_size)
 
 	tree_ops = get_inode_ops(T_TREE);
 
-	/* Lookup file to get size populated */
 	n = tree_ops->lookup(repo, tree_node, "file.txt");
 	ASSERT_NOT_NULL(n);
 
-	/* "hello\n" = 6 bytes */
 	ASSERT_EQ(n->size, 6);
 
 	return 0;
 }
-
-/* --- Remotes tests --- */
 
 TEST(test_update_remotes)
 {
@@ -626,11 +571,9 @@ TEST(test_update_remote_branches)
 	origin = get_tree_child(remotes, "origin");
 	ASSERT_NOT_NULL(origin);
 
-	/* origin is a T_BRANCHES node under T_REMOTES parent */
 	branch_ops = get_inode_ops(T_BRANCHES);
 	ASSERT_EQ(branch_ops->update(repo, origin), 0);
 
-	/* Should have the default branch as a remote tracking branch */
 	n = origin->child;
 	ASSERT_NOT_NULL(n);
 	ASSERT(count_tree_children(origin) >= 1);
@@ -652,7 +595,6 @@ TEST(test_lookup_remote_branches)
 
 	branch_ops = get_inode_ops(T_BRANCHES);
 
-	/* "feature" was pushed to the bare clone */
 	n = branch_ops->lookup(repo, origin, "feature");
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->type, T_COMMIT);
@@ -663,8 +605,6 @@ TEST(test_lookup_remote_branches)
 
 	return 0;
 }
-
-/* --- Objects tests --- */
 
 TEST(test_update_objects)
 {
@@ -682,10 +622,8 @@ TEST(test_update_objects)
 	ASSERT_EQ(ops->update(repo, objects), 0);
 
 	count = count_tree_children(objects);
-	/* Test repo has 2 commits (first + second) */
 	ASSERT(count >= 2);
 
-	/* All children should be T_COMMIT directories with hex names. */
 	n = objects->child;
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->type, T_COMMIT);
@@ -705,7 +643,6 @@ TEST(test_lookup_objects)
 	objects = get_tree_node(OBJECTS);
 	ops = get_inode_ops(T_OBJECTS);
 
-	/* Get HEAD's SHA to use as a known-good hash */
 	if (git_revparse_single(&obj, repo, "HEAD"))
 		FAIL("git_revparse_single failed");
 	git_oid_tostr(hex, sizeof(hex), git_object_id(obj));
@@ -729,17 +666,13 @@ TEST(test_lookup_objects_invalid)
 	objects = get_tree_node(OBJECTS);
 	ops = get_inode_ops(T_OBJECTS);
 
-	/* Non-hex string */
 	ASSERT_NULL(ops->lookup(repo, objects, "not-a-hash"));
 
-	/* Too short */
 	ASSERT_NULL(ops->lookup(repo, objects, "abcdef"));
 
-	/* Valid hex but non-existent OID */
 	ASSERT_NULL(ops->lookup(repo, objects,
 		"0000000000000000000000000000000000000000"));
 
-	/* Empty string */
 	ASSERT_NULL(ops->lookup(repo, objects, ""));
 
 	return 0;
@@ -755,7 +688,6 @@ TEST(test_objects_commit_structure)
 	objects = get_tree_node(OBJECTS);
 	obj_ops = get_inode_ops(T_OBJECTS);
 
-	/* Look up HEAD commit by hash */
 	if (git_revparse_single(&obj, repo, "HEAD"))
 		FAIL("git_revparse_single failed");
 	git_oid_tostr(hex, sizeof(hex), git_object_id(obj));
@@ -764,11 +696,9 @@ TEST(test_objects_commit_structure)
 	commit_node = obj_ops->lookup(repo, objects, hex);
 	ASSERT_NOT_NULL(commit_node);
 
-	/* Update the commit to populate children */
 	commit_ops = get_inode_ops(T_COMMIT);
 	ASSERT_EQ(commit_ops->update(repo, commit_node), 0);
 
-	/* Should have: tree, hash, msg, parent */
 	n = get_tree_child(commit_node, "tree");
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->type, T_TREE);
@@ -828,13 +758,11 @@ TEST(test_objects_hash_matches_name)
 	close(fd);
 
 	ASSERT_EQ(n, 41);
-	buf[40] = '\0';  /* strip newline */
+	buf[40] = '\0';
 	ASSERT_STR_EQ(buf, hex);
 
 	return 0;
 }
-
-/* --- Error path tests --- */
 
 TEST(test_get_inode_ops_out_of_range)
 {
@@ -861,7 +789,6 @@ TEST(test_lookup_tree_nonexistent)
 
 	tree_ops = get_inode_ops(T_TREE);
 
-	/* Various non-existent paths */
 	n = tree_ops->lookup(repo, tree_node, "");
 	ASSERT_NULL(n);
 
@@ -910,7 +837,6 @@ TEST(test_root_commit_no_parent_entry)
 	root_commit = parent_node;
 	ASSERT_EQ(ops->update(repo, root_commit), 0);
 
-	/* Root commit should have tree/hash/msg but no parent */
 	ASSERT_NOT_NULL(get_tree_child(root_commit, "tree"));
 	ASSERT_NOT_NULL(get_tree_child(root_commit, "hash"));
 	ASSERT_NOT_NULL(get_tree_child(root_commit, "msg"));
@@ -927,8 +853,7 @@ TEST(test_lookup_generic)
 	root = get_tree_node(ROOT);
 	ops = get_inode_ops(T_GENERIC);
 
-	/* T_GENERIC has no update — children are static and the
-	 * watcher pushes invalidation for everything mutable. */
+	/* static children: nothing to update */
 	ASSERT_NULL(ops->update);
 
 	n = ops->lookup(repo, root, "branches");
@@ -939,8 +864,6 @@ TEST(test_lookup_generic)
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->ino, TAGS);
 
-	/* HEAD lookup just returns the inode — its obj is populated
-	 * by populate_refs at mount, not by lookup. */
 	n = ops->lookup(repo, root, "HEAD");
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->ino, HEAD);
@@ -950,8 +873,6 @@ TEST(test_lookup_generic)
 
 	return 0;
 }
-
-/* --- Timestamp (mtime) tests --- */
 
 TEST(test_mtime_head)
 {
@@ -985,7 +906,6 @@ TEST(test_mtime_commit_children)
 	ops = get_inode_ops(T_COMMIT);
 	ASSERT_EQ(ops->update(repo, head), 0);
 
-	/* tree, hash, msg should inherit commit mtime */
 	n = get_tree_child(head, "tree");
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->mtime, head->mtime);
@@ -1016,7 +936,6 @@ TEST(test_mtime_parent_own_time)
 	parent = get_tree_child(head, "parent");
 	ASSERT_NOT_NULL(parent);
 
-	/* parent commit gets its own git_commit_time, not HEAD's */
 	parent_time = commit_time_by_oid(&parent->oid);
 	ASSERT(parent_time > 0);
 	ASSERT_EQ(parent->mtime, parent_time);
@@ -1112,7 +1031,6 @@ TEST(test_mtime_tree_propagation)
 	tree_ops = get_inode_ops(T_TREE);
 	ASSERT_EQ(tree_ops->update(repo, tree_node), 0);
 
-	/* Files in tree inherit the commit's mtime */
 	n = get_tree_child(tree_node, "file.txt");
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->mtime, head->mtime);
@@ -1151,7 +1069,6 @@ TEST(test_mtime_static_zero)
 {
 	struct inode *n;
 
-	/* Static nodes have no git commit, mtime should be 0 */
 	n = get_tree_node(ROOT);
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->mtime, 0);
@@ -1186,7 +1103,6 @@ TEST(test_mtime_remote_branches)
 	branch_ops = get_inode_ops(T_BRANCHES);
 	ASSERT_EQ(branch_ops->update(repo, origin), 0);
 
-	/* Remote branch commits should have mtime set */
 	n = origin->child;
 	ASSERT_NOT_NULL(n);
 	ASSERT(n->mtime > 0);
@@ -1212,8 +1128,6 @@ TEST(test_lookup_tree_lazy_obj)
 
 	tree_ops = get_inode_ops(T_TREE);
 
-	/* lookup_tree sets size from git_odb_read_header without loading
-	 * the blob; the blob is fetched fresh by open. */
 	n = tree_ops->lookup(repo, tree_node, "file2.txt");
 	ASSERT_NOT_NULL(n);
 	ASSERT_EQ(n->mode, T_FILE);
@@ -1245,10 +1159,141 @@ TEST(test_node_size_directory)
 	tree_ops = get_inode_ops(T_TREE);
 	ASSERT_EQ(tree_ops->update(repo, tree_node), 0);
 
-	/* Directories should have size 0 */
 	dir = get_tree_child(tree_node, "tree");
 	if (dir && dir->mode == T_DIR)
 		ASSERT_EQ(dir->size, 0);
+
+	return 0;
+}
+
+static size_t
+live_inodes(void)
+{
+	struct tree_stats st;
+
+	tree_stats(&st);
+	return st.live;
+}
+
+static void
+watcher_refresh(struct inode *p)
+{
+	struct inode *retired;
+
+	free_retired(axchg(&p->retired, NULL));
+	retired = axchg(&p->child, NULL);
+	astore(&p->retired, retired);
+	p->ops->update(repo, p);
+}
+
+TEST(test_repopulate_no_alloc)
+{
+	struct inode *head, *tree_node;
+	size_t base = 0;
+	int i;
+
+	head = head_commit_inode();
+	ASSERT_NOT_NULL(head);
+
+	for (i = 0; i < 3; i++) {
+		ASSERT_EQ(head->ops->update(repo, head), 0);
+		tree_node = get_tree_child(head, "tree");
+		ASSERT_NOT_NULL(tree_node);
+		ASSERT_EQ(tree_node->ops->update(repo, tree_node), 0);
+		ASSERT_NOT_NULL(tree_node->ops->lookup(repo, tree_node,
+		                                       "file.txt"));
+		if (i == 0)
+			base = live_inodes();
+	}
+	ASSERT_EQ(live_inodes(), base);
+
+	return 0;
+}
+
+TEST(test_refresh_cycles_bounded)
+{
+	struct inode *heads, *tags;
+	size_t base = 0;
+	int i;
+
+	heads = get_tree_node(HEADS);
+	tags = get_tree_node(TAGS);
+
+	for (i = 0; i < 100; i++) {
+		watcher_refresh(heads);
+		watcher_refresh(tags);
+		if (i == 1)
+			base = live_inodes();
+	}
+	ASSERT_EQ(live_inodes(), base);
+
+	return 0;
+}
+
+TEST(test_refresh_head_frees_subtree)
+{
+	struct inode *head, *n;
+	size_t base;
+
+	head = get_tree_node(HEAD);
+	watcher_refresh(head);
+	watcher_refresh(head);
+	base = live_inodes();
+
+	n = get_tree_child(head, "tree");
+	ASSERT_NOT_NULL(n);
+	ASSERT_EQ(n->ops->update(repo, n), 0);
+	n = get_tree_child(head, "parent");
+	ASSERT_NOT_NULL(n);
+	ASSERT_EQ(n->ops->update(repo, n), 0);
+
+	watcher_refresh(head);
+	watcher_refresh(head);
+	if (live_inodes() != base)
+		FAIL("%zu inodes leaked", live_inodes() - base);
+
+	return 0;
+}
+
+TEST(test_open_no_fd_leak)
+{
+	struct inode *head, *tree_node, *scratch, *bogus, *files[3];
+	int i, j, fd, base;
+
+	head = head_commit_inode();
+	ASSERT_NOT_NULL(head);
+	ASSERT_EQ(head->ops->update(repo, head), 0);
+	tree_node = get_tree_child(head, "tree");
+	ASSERT_NOT_NULL(tree_node);
+
+	files[0] = get_tree_child(head, "hash");
+	files[1] = get_tree_child(head, "msg");
+	files[2] = tree_node->ops->lookup(repo, tree_node, "file.txt");
+	for (j = 0; j < 3; j++)
+		ASSERT_NOT_NULL(files[j]);
+
+	scratch = add_tree_node(get_tree_node(ROOT), "fd-scratch",
+	                        T_GENERIC, T_DIR, NULL, NULL);
+	bogus = add_tree_node(scratch, "bogus", T_TREE, T_FILE, NULL, NULL);
+	ASSERT_NOT_NULL(bogus);
+
+	/* libgit2 opens pack and index files lazily: warm up first */
+	for (j = 0; j < 3; j++) {
+		fd = files[j]->ops->open(repo, files[j]);
+		ASSERT(fd >= 0);
+		close(fd);
+	}
+	base = count_open_fds();
+
+	for (i = 0; i < 100; i++) {
+		for (j = 0; j < 3; j++) {
+			fd = files[j]->ops->open(repo, files[j]);
+			ASSERT(fd >= 0);
+			close(fd);
+		}
+		ASSERT_EQ(bogus->ops->open(repo, bogus), -1);
+	}
+	ASSERT_EQ(count_open_fds(), base);
 
 	return 0;
 }
@@ -1318,9 +1363,16 @@ main(void)
 	RUN_TEST(test_mtime_remote_branches);
 	RUN_TEST(test_lookup_tree_lazy_obj);
 
+	RUN_TEST(test_repopulate_no_alloc);
+	RUN_TEST(test_refresh_cycles_bounded);
+	RUN_TEST(test_open_no_fd_leak);
+	RUN_XFAIL(test_refresh_head_frees_subtree,
+	          "push_free() drops the subtree of a retired node");
+
 	if (test_odb)
 		git_odb_free(test_odb);
 	git_repository_free(repo);
+	tree_destroy();
 out:
 	cleanup_test_repo(repo_path);
 	git_libgit2_shutdown();

@@ -130,8 +130,21 @@ Falls back to buffered reads automatically if unavailable.
 ### Tests
 
 ```
-make test
+make test             # unit, mount, and fd/memory tests
+make stress           # concurrent data integrity checks
 ```
+
+Shell tests share `tests/lib.sh`; C unit tests use `tests/harness.h`.
+
+`tests/test_resources.sh` measures git-fs through `/proc` while driving
+workloads against a mount: fds are given back after use, memory
+plateaus on repeated work and under ref churn, and clients don't see
+`EMFILE` when git-fs runs under a low `RLIMIT_NOFILE`. It ends with a
+metrics table (fds per open file, release lag, RSS per cached file);
+set `RESULTS=file` to save it for comparison. `make resources
+REPO=/path` runs it against an existing repository, and `FD_LIMIT=n`
+sets the limit for the low-fd scenario. Known bugs are reported as
+`XFAIL` and don't fail the run.
 
 ## Design
 
