@@ -132,6 +132,7 @@ Falls back to buffered reads automatically if unavailable.
 ```
 make test             # unit, mount, and fd/memory tests
 make test-asan        # the same under ASan/LSan/UBSan
+make test-tsan        # the same under ThreadSanitizer
 make stress           # concurrent data integrity checks
 ```
 

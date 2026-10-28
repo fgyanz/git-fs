@@ -5,3 +5,4 @@ tests/test_*
 !tests/test_*.sh
 !tests/*.h
 git-fs-asan
+git-fs-tsan
