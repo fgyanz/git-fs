@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # Ubuntu's libfuse is older than the 3.17 git-fs needs
+    container:
+      image: opensuse/tumbleweed
+      options: --privileged
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [test, test-asan, test-tsan]
+    steps:
+      - name: Install dependencies
+        run: >
+          zypper --non-interactive install --no-recommends
+          gcc make pkgconf-pkg-config fuse3 fuse3-devel libgit2-devel
+          git findutils gawk tar gzip
+      - uses: actions/checkout@v5
+      - run: make ${{ matrix.target }}
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: make lint
