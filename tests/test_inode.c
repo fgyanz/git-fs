@@ -58,10 +58,12 @@ create_test_repo(void)
 	    run_cmd(p, "git config user.name test") ||
 	    run_cmd(p, "echo hello > file.txt") ||
 	    run_cmd(p, "git add file.txt") ||
-	    run_cmd(p, "git commit -q -m 'first commit'") ||
+	    run_cmd(p, "GIT_COMMITTER_DATE='@1700000000 +0000' "
+	               "git commit -q -m 'first commit'") ||
 	    run_cmd(p, "echo world > file2.txt") ||
 	    run_cmd(p, "git add file2.txt") ||
-	    run_cmd(p, "git commit -q -m 'second commit'") ||
+	    run_cmd(p, "GIT_COMMITTER_DATE='@1700000100 +0000' "
+	               "git commit -q -m 'second commit'") ||
 	    run_cmd(p, "git tag v1.0") ||
 	    run_cmd(p, "git branch feature")) {
 		fprintf(stderr, "Failed to create test repo\n");

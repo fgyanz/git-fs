@@ -141,6 +141,20 @@ child_oid_for(struct inode *dir, git_commit *c, unsigned type, git_oid *out)
 	}
 }
 
+static time_t
+child_mtime(struct inode *dir, git_commit *c, unsigned type)
+{
+	git_commit *p;
+	time_t t;
+
+	if (type != T_PARENT || git_commit_parent(&p, c, 0))
+		return dir->mtime;
+
+	t = git_commit_time(p);
+	git_commit_free(p);
+	return t;
+}
+
 static int
 update_commit(git_repository *repo, struct inode *dir)
 {
@@ -167,7 +181,7 @@ update_commit(git_repository *repo, struct inode *dir)
 			git_commit_free(c);
 			return 1;
 		}
-		n->mtime = dir->mtime;
+		n->mtime = child_mtime(dir, c, d->type);
 		n->size = get_node_size(repo, n);
 	}
 
@@ -183,6 +197,7 @@ lookup_commit(git_repository *repo, struct inode *dir, const char *entry)
 	struct inode *n;
 	git_commit *c;
 	git_oid oid;
+	time_t mtime;
 
 	d = NULL;
 	for (i = 0; i < ARRAY_SIZE(dentries); i++) {
@@ -205,13 +220,14 @@ lookup_commit(git_repository *repo, struct inode *dir, const char *entry)
 		git_commit_free(c);
 		return NULL;
 	}
+	mtime = child_mtime(dir, c, d->type);
 	git_commit_free(c);
 
 	n = add_tree_node(dir, d->name, d->type, d->mode, set_oid, &oid);
 	if (!n)
 		return NULL;
 
-	n->mtime = dir->mtime;
+	n->mtime = mtime;
 	n->size = get_node_size(repo, n);
 
 	return n;

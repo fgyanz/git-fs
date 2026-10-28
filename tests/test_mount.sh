@@ -30,17 +30,17 @@ echo "hello" > file.txt
 mkdir subdir
 echo "nested" > subdir/inner.txt
 git add .
-git commit -q -m "first commit"
+GIT_COMMITTER_DATE="@1700000000 +0000" git commit -q -m "first commit"
 echo "world" > file2.txt
 git add file2.txt
-git commit -q -m "second commit"
+GIT_COMMITTER_DATE="@1700000100 +0000" git commit -q -m "second commit"
 # 500 entries force several readdir calls
 mkdir manyfiles
 for i in $(seq -w 1 500); do
 	echo "content-$i" > "manyfiles/f-$i.txt"
 done
 git add manyfiles
-git commit -q -m "add large directory"
+GIT_COMMITTER_DATE="@1700000200 +0000" git commit -q -m "add large directory"
 git tag v1.0
 git branch feature
 
