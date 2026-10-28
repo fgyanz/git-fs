@@ -904,6 +904,7 @@ TEST(test_tree_destroy)
 {
 	tree_destroy();
 	ASSERT_NULL(nodes);
+	ASSERT_NULL(get_tree_node(ROOT));
 
 	return 0;
 }
