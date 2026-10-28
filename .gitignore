@@ -4,3 +4,4 @@ tests/test_*
 !tests/test_*.[ch]
 !tests/test_*.sh
 !tests/*.h
+git-fs-asan

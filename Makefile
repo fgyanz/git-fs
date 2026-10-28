@@ -16,6 +16,11 @@ LIBS    = $(PKG_LIBS)
 
 BIN  = git-fs
 OBJS = git-fs.o tree.o inode.o inotify.o
+SRCS = git-fs.c tree.c inode.c inotify.c
+HDRS = inode.h tree.h inotify.h
+
+SAN_CFLAGS = $(CFLAGS) -U_FORTIFY_SOURCE -O1 -g -fno-omit-frame-pointer \
+             -fsanitize=$(SANITIZE)
 
 all: $(BIN)
 
@@ -60,11 +65,26 @@ stress-kernel: $(BIN)
 resources: $(BIN)
 	REPO=$(REPO) ./tests/test_resources.sh
 
+test-asan:
+	$(MAKE) sanitize SAN=asan SANITIZE=address,undefined
+
+sanitize: git-fs-$(SAN) tests/test_tree-$(SAN) tests/test_inode-$(SAN)
+	./tests/test_asan.sh ./git-fs-$(SAN)
+
+git-fs-$(SAN): $(SRCS) $(HDRS)
+	$(CC) $(SAN_CFLAGS) $(LDFLAGS) -o $@ $(SRCS) $(LIBS)
+
 tests/test_tree: tests/test_tree.c tests/harness.h tree.c inode.c inode.h tree.h
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tests/test_tree.c tree.c inode.c $(LIBS)
 
 tests/test_inode: tests/test_inode.c tests/harness.h tree.c inode.c inode.h tree.h
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tests/test_inode.c tree.c inode.c $(LIBS)
 
+tests/test_tree-$(SAN): tests/test_tree.c tests/harness.h tree.c inode.c inode.h tree.h
+	$(CC) $(SAN_CFLAGS) $(LDFLAGS) -o $@ tests/test_tree.c tree.c inode.c $(LIBS)
+
+tests/test_inode-$(SAN): tests/test_inode.c tests/harness.h tree.c inode.c inode.h tree.h
+	$(CC) $(SAN_CFLAGS) $(LDFLAGS) -o $@ tests/test_inode.c tree.c inode.c $(LIBS)
+
 clean:
-	rm -f $(BIN) $(OBJS) $(TESTS)
+	rm -f $(BIN) $(OBJS) $(TESTS) git-fs-asan tests/test_*-asan
