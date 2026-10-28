@@ -77,6 +77,7 @@ static unsigned long ftop_ino;   /* head of free list, 0 = empty */
 static unsigned *batch_nfree;    /* free count per batch */
 static size_t nhwm;              /* next unused ino */
 static size_t nmax;              /* pool capacity */
+static size_t nlive;             /* allocated non-static inodes */
 
 /* add ino to the front of the free list. */
 static void
@@ -139,6 +140,7 @@ push_free(struct inode *n)
 	free(n->name);
 	memset(n, 0, sizeof(*n));
 	n->ino = ino;
+	afsub(&nlive, 1);
 
 	old = afadd(&batch_nfree[bi], 1);
 	push_list(ino);
@@ -200,6 +202,7 @@ retry:
 
 	astore(&free_next[ino], 0);
 	nodes[ino].ino = ino;  /* page may have been wiped by reclaim */
+	afadd(&nlive, 1);
 	return nodes + ino;
 }
 
@@ -409,6 +412,15 @@ free_retired(struct inode *head)
 	} while (c != head);
 }
 
+/* pool usage snapshot. */
+void
+tree_stats(struct tree_stats *st)
+{
+	st->live = aload(&nlive);
+	st->hwm = aload(&nhwm);
+	st->capacity = nmax;
+}
+
 /* shutdown: free everything. */
 void
 tree_destroy(void)
@@ -429,6 +441,7 @@ tree_destroy(void)
 	munmap(free_next, nmax * sizeof(*free_next));
 	free(batch_nfree);
 	nodes = NULL;
+	nlive = 0;
 }
 
 /* set up the pools, static inodes, and initial free list. */
