@@ -1,29 +1,25 @@
 #!/bin/sh
-# Stress test for git-fs data integrity
+# Stress test for git-fs data integrity under concurrent load
 # Usage: ./tests/test_stress.sh [/path/to/git-fs-binary]
 #
-# Validates that every byte read through the FUSE mount matches the
-# actual git object data, under heavy concurrent load.
-#
 # Environment variables:
-#   WORKERS         - concurrent reader processes (default: 16)
-#   ROUNDS          - hard cap on rounds (default: 5)
-#   REPO            - external repo path; empty = create test repo
-#   MAX_COMMITS     - commits sampled from the repo (default: 20)
-#   DURATION        - wall-clock cap, e.g. "5m", "2h", "1h30m", "300s".
-#                     When set, rounds keep running until elapsed time
-#                     exceeds DURATION; ROUNDS becomes a hard upper cap.
-#   RANDOM_SAMPLE   - 1 = re-sample commits + refs at random per round.
-#                     Default: 1 if DURATION is set, else 0.
-#   CHURN           - 1 = run a ref-churning background loop alongside
-#                     readers. Mutates only refs/heads/stress-churn/*,
-#                     refs/tags/stress-churn-*, and HEAD. Default: 0.
-#                     Requires REPO to be writable.
-#   CHURN_INTERVAL  - sleep between churn ops (default: 0.1, seconds).
+#   WORKERS          - concurrent reader processes (default: 16)
+#   ROUNDS           - max rounds (default: 5)
+#   REPO             - external repo path; empty = create test repo
+#   MAX_COMMITS      - commits sampled from the repo (default: 20)
+#   DURATION         - keep running rounds this long, e.g. 5m, 1h30m
+#   RANDOM_SAMPLE    - 1 = re-sample commits and refs every round
+#                      (default: 1 if DURATION is set)
+#   CHURN            - 1 = move refs while reading: stress-churn refs
+#                      and HEAD, restored on exit. Needs a writable REPO
+#   CHURN_INTERVAL   - seconds between churn ops (default: 0.1)
+#   MONITOR_INTERVAL - seconds between resource samples (default: 2)
 
 set -e
 
-GITFS="${1:-./git-fs}"
+. "$(dirname "$0")/lib.sh"
+use_gitfs "$1"
+
 WORKERS="${WORKERS:-16}"
 ROUNDS="${ROUNDS:-5}"
 EXT_REPO="${REPO:-}"
@@ -31,22 +27,18 @@ MAX_COMMITS="${MAX_COMMITS:-20}"
 DURATION="${DURATION:-}"
 CHURN="${CHURN:-0}"
 CHURN_INTERVAL="${CHURN_INTERVAL:-0.1}"
-# default RANDOM_SAMPLE to 1 when DURATION is set, else 0
 if [ -z "${RANDOM_SAMPLE:-}" ]; then
 	if [ -n "$DURATION" ]; then RANDOM_SAMPLE=1; else RANDOM_SAMPLE=0; fi
 fi
 
-# parse a duration like "5m", "2h30m", "300s", "1h" → seconds
-# echoes the parsed seconds, or echoes nothing on parse failure
+# prints nothing if $1 can't be parsed
 duration_to_seconds() {
 	d=$1
 	[ -z "$d" ] && return 0
-	# pure digits → seconds
 	case "$d" in
 		*[!0-9]*) ;;
 		*) echo "$d"; return 0 ;;
 	esac
-	# parse h, m, s components
 	total=0
 	rem=$d
 	while [ -n "$rem" ]; do
@@ -74,40 +66,28 @@ if [ -n "$DURATION" ]; then
 	fi
 fi
 
-if [ ! -x "$GITFS" ]; then
-	echo "error: $GITFS not found or not executable" >&2
-	exit 1
-fi
-
-# Resolve to an absolute path: the mount step cds into the repo.
-GITFS=$(readlink -f "$GITFS")
-
-TMPBASE="${TMPDIR:-/tmp}"
-MNT=$(mktemp -d "$TMPBASE/git-fs-stress-mnt-XXXXXX")
-ERR_LOG=$(mktemp "$TMPBASE/git-fs-stress-err-XXXXXX")
-WORK_DIR=$(mktemp -d "$TMPBASE/git-fs-stress-work-XXXXXX")
+MNT="$TESTDIR/mnt"
+ERR_LOG="$TESTDIR/err.log"
+WORK_DIR="$TESTDIR/work"
 OWN_REPO=""
+mkdir "$MNT" "$WORK_DIR"
+: > "$ERR_LOG"
 
-cleanup() {
-	# stop and clean the churner first — needs REPO to still be there
+test_cleanup() {
+	if [ -n "$monitor_pid" ]; then
+		: > "$WORK_DIR/monitor-stop"
+		wait "$monitor_pid" 2>/dev/null || true
+	fi
 	if [ "$CHURN" = "1" ]; then
 		: > "$WORK_DIR/churner-stop" 2>/dev/null || true
 		churn_cleanup 2>/dev/null || true
 	fi
-	fusermount3 -u "$MNT" 2>/dev/null || true
-	rm -rf "$MNT" "$ERR_LOG" "$WORK_DIR"
-	[ -n "$OWN_REPO" ] && rm -rf "$OWN_REPO"
 }
-trap cleanup EXIT
 
-# ── Verification functions ──────────────────────────────────────────
-# These never return non-zero — they log failures and echo 0/1.
-# Callers capture the echoed value to count pass/fail.
+# verify_* FUSE_PATH SHA [REPO_PATH]: log failures to ERR_LOG and print
+# 1 if the check passed, 0 if not
 
 verify_blob() {
-	# $1 = fuse path, $2 = commit SHA, $3 = repo-relative path
-	# Read both FUSE and git into temp files for atomic hash+size comparison.
-	# No pipelines — exit codes are checked explicitly.
 	ftmp=$(mktemp "$WORK_DIR/vfuse-XXXXXX")
 	gtmp=$(mktemp "$WORK_DIR/vgit-XXXXXX")
 	gerr=$(mktemp "$WORK_DIR/giterr-XXXXXX")
@@ -151,9 +131,7 @@ verify_blob() {
 }
 
 verify_symlink() {
-	# $1 = fuse path, $2 = commit SHA, $3 = repo-relative path
-	# git stores symlinks as blobs containing the target path.
-	# FUSE may expose them as symlinks (readlink) or as regular files (cat).
+	# git stores symlinks as blobs: git-fs may show either
 	gtarget=$(git -C "$REPO" show "$2:$3" 2>/dev/null) || {
 		echo "FAIL symlink $3 @ $2: git show failed" >> "$ERR_LOG"
 		echo 0; return 0
@@ -174,7 +152,6 @@ verify_symlink() {
 }
 
 verify_hash() {
-	# $1 = fuse path to hash file, $2 = expected SHA (from git, not FUSE)
 	got=$(cat "$1" 2>/dev/null || echo "READ_ERROR")
 	got=$(printf '%s' "$got" | tr -d '\n')
 	if [ "$got" != "$2" ]; then
@@ -185,13 +162,9 @@ verify_hash() {
 }
 
 verify_msg() {
-	# $1 = fuse path to msg file, $2 = commit SHA
 	fmsg=$(cat "$1" 2>/dev/null || echo "READ_ERROR")
 	gmsg=$(git -C "$REPO" log -1 --format='%B' "$2")
-	# guard against empty-vs-empty: commit messages are always non-empty,
-	# but verify explicitly
 	if [ -z "$gmsg" ] && [ -z "$fmsg" ]; then
-		# both empty — cannot distinguish a FUSE bug from a truly empty msg
 		echo "FAIL msg @ $2: both fuse and git returned empty, cannot verify path=$1" >> "$ERR_LOG"
 		echo 0; return 0
 	fi
@@ -203,10 +176,6 @@ verify_msg() {
 }
 
 verify_tree_listing() {
-	# $1 = fuse dir path, $2 = commit SHA, $3 = repo-relative dir
-	# ls -1a to include dotfiles; grep -v to strip . and ..
-	# capture the ls exit status separately so we can distinguish
-	# "ls failed (EIO/ENOENT)" from "directory listed but is empty".
 	fls_err=$(mktemp "$WORK_DIR/lserr-XXXXXX")
 	fls_raw=$(ls -1a "$1" 2>"$fls_err")
 	fls_rc=$?
@@ -219,8 +188,6 @@ verify_tree_listing() {
 	fls=$(printf '%s\n' "$fls_raw" | grep -v '^\.\.\{0,1\}$' | grep -v '^$' | sort)
 	gls=$(git -C "$REPO" ls-tree --name-only "$2" "$3/" | sed "s|^$3/||" | sort)
 	if [ "$fls" != "$gls" ]; then
-		# count actual entries (zero when empty, no off-by-one from
-		# `echo`'s implicit trailing newline)
 		[ -z "$fls" ] && fcnt=0 || fcnt=$(printf '%s\n' "$fls" | wc -l)
 		[ -z "$gls" ] && gcnt=0 || gcnt=$(printf '%s\n' "$gls" | wc -l)
 
@@ -242,10 +209,8 @@ verify_tree_listing() {
 	echo 1; return 0
 }
 
-# ── Worker helpers ──────────────────────────────────────────────────
-
+# count RESULT: bumps the calling worker's pass/fail
 count() {
-	# $1 = verify result (0 or 1), uses $pass $fail from caller scope
 	if [ "$1" = "1" ]; then
 		pass=$((pass + 1))
 	else
@@ -258,10 +223,8 @@ write_counts() {
 	echo "$fail" > "$cfile_f"
 }
 
-# ── Worker functions ────────────────────────────────────────────────
-# Workers disable set -e so verify failures don't abort the subshell.
+# workers run with set +e: a failed check must not end the worker
 
-# Scenario A: full tree walk — verify every blob in a commit
 worker_tree_walk() {
 	set +e
 	wid=$1; sha=$2; round=$3
@@ -269,17 +232,15 @@ worker_tree_walk() {
 	cfile_p="$WORK_DIR/pass-A-$round-$wid"
 	cfile_f="$WORK_DIR/fail-A-$round-$wid"
 
-	# dump file list with modes to handle symlinks (120000) separately
 	lstmp="$WORK_DIR/ls-A-$round-$wid.tmp"
 	git -C "$REPO" ls-tree -r "$sha" > "$lstmp"
 	while IFS='	' read -r meta path; do
 		mode=$(echo "$meta" | cut -d' ' -f1)
 		fpath="$MNT/objects/$sha/tree/$path"
 		if [ "$mode" = "120000" ]; then
-			# symlink: verify target string matches git blob content
 			count "$(verify_symlink "$fpath" "$sha" "$path")"
 		elif [ "$mode" = "160000" ]; then
-			# submodule: skip (not a blob)
+			# submodule: no blob to read
 			continue
 		else
 			count "$(verify_blob "$fpath" "$sha" "$path")"
@@ -292,8 +253,6 @@ worker_tree_walk() {
 	write_counts
 }
 
-# Scenario B: same-file contention — multiple workers read same files
-# Uses immutable objects/ path so HEAD mutation can't cause stale SHA mismatch.
 worker_contention() {
 	set +e
 	wid=$1; head_sha=$2; round=$3
@@ -301,11 +260,10 @@ worker_contention() {
 	cfile_p="$WORK_DIR/pass-B-$round-$wid"
 	cfile_f="$WORK_DIR/fail-B-$round-$wid"
 
-	# pick two files: largest blob + first text file
 	big=$(git -C "$REPO" ls-tree -r -l "$head_sha" | sort -k4 -rn | sed '1q' | awk '{print $5}')
 	small=$(git -C "$REPO" ls-tree -r --name-only "$head_sha" | sed '1q')
 
-	# use immutable objects/$sha path, not HEAD (which is mutable)
+	# objects/$sha, not HEAD: HEAD may move under churn
 	base="$MNT/objects/$head_sha/tree"
 	i=0
 	while [ $i -lt 50 ]; do
@@ -331,7 +289,6 @@ worker_contention() {
 	write_counts
 }
 
-# Scenario C: readdir + read interleave
 worker_readdir_read() {
 	set +e
 	wid=$1; round=$2
@@ -340,14 +297,12 @@ worker_readdir_read() {
 	cfile_f="$WORK_DIR/fail-C-$round-$wid"
 
 	while IFS= read -r sha; do
-		# find a subtree directory in this commit
 		dir=$(git -C "$REPO" ls-tree "$sha" | awk '$2=="tree"{print $4; exit}')
 		[ -z "$dir" ] && continue
 		[ -d "$MNT/objects/$sha/tree/$dir" ] || continue
 
 		count "$(verify_tree_listing "$MNT/objects/$sha/tree/$dir" "$sha" "$dir")"
 
-		# read up to 20 files from the listing
 		flist="$WORK_DIR/flist-C-$round-$wid.tmp"
 		ls -1 "$MNT/objects/$sha/tree/$dir/" > "$flist" 2>/dev/null
 		nread=0
@@ -361,11 +316,8 @@ worker_readdir_read() {
 	write_counts
 }
 
-# Scenario D: parent chain walk
-# Captures FUSE's HEAD once, then walks the rest via immutable
-# objects/$sha/parent paths. Under churn the HEAD can move, but the
-# captured SHA still names a commit reachable in git history (or did
-# at the moment of capture); we verify exactly that.
+# reads HEAD/hash once, then only objects/$sha paths: under churn
+# HEAD/* may already point at another commit
 worker_parent_chain() {
 	set +e
 	wid=$1; round=$2
@@ -373,24 +325,17 @@ worker_parent_chain() {
 	cfile_p="$WORK_DIR/pass-D-$round-$wid"
 	cfile_f="$WORK_DIR/fail-D-$round-$wid"
 
-	# capture FUSE's view of HEAD. strip trailing newline.
 	head_sha=$(cat "$MNT/HEAD/hash" 2>/dev/null | tr -d '\n')
 	if [ -z "$head_sha" ]; then
 		echo "FAIL parent chain: cannot read MNT/HEAD/hash" >> "$ERR_LOG"
 		count 0; write_counts; return
 	fi
-	# the captured SHA must name a real commit (FUSE never invents SHAs)
 	if ! git -C "$REPO" cat-file -e "${head_sha}^{commit}" 2>/dev/null; then
 		echo "FAIL parent chain: FUSE HEAD '$head_sha' is not a commit" >> "$ERR_LOG"
 		count 0; write_counts; return
 	fi
-	# verify the msg via the immutable objects/ path keyed by the
-	# captured SHA. reading MNT/HEAD/msg here would race with the
-	# churner: HEAD can move between the hash read above and the msg
-	# read, so MNT/HEAD/msg may already point at a different commit.
 	count "$(verify_msg "$MNT/objects/$head_sha/msg" "$head_sha")"
 
-	# build expected parent chain from the captured SHA (immutable)
 	chaintmp="$WORK_DIR/chain-D-$round-$wid.tmp"
 	sha=$head_sha
 	depth=0
@@ -400,7 +345,6 @@ worker_parent_chain() {
 		depth=$((depth + 1))
 	done
 
-	# walk the immutable parent chain rooted at the captured HEAD SHA
 	expected_depth=$(wc -l < "$chaintmp")
 	cpath="$MNT/objects/$head_sha"
 	depth=0
@@ -422,7 +366,6 @@ worker_parent_chain() {
 	done < "$chaintmp"
 	rm -f "$chaintmp"
 
-	# detect truncated chain: FUSE missing parent/ dirs for commits that have parents
 	if [ "$depth" -lt "$expected_depth" ]; then
 		echo "FAIL parent chain: walked $depth of $expected_depth commits" >> "$ERR_LOG"
 		count 0
@@ -430,14 +373,8 @@ worker_parent_chain() {
 	write_counts
 }
 
-# Scenario E: branch/tag cross-walk
-# Captures FUSE's view of each ref first, then verifies that view is
-# self-consistent with some valid git state. Under churn the ref may
-# move between reads — that's fine, we don't assert "FUSE matches git
-# this instant", we assert "FUSE returned a SHA that is a real commit
-# and the data hanging off that ref is the data git stores under the
-# captured SHA". Tree reads go through immutable objects/$sha/tree to
-# decouple from further ref motion mid-walk.
+# a ref may move under churn, so only check that the SHA it shows is a
+# real commit, then read that commit's data through objects/$sha
 worker_refs() {
 	set +e
 	wid=$1; round=$2
@@ -445,7 +382,6 @@ worker_refs() {
 	cfile_p="$WORK_DIR/pass-E-$round-$wid"
 	cfile_f="$WORK_DIR/fail-E-$round-$wid"
 
-	# branches — sample N at random when RANDOM_SAMPLE is on, head -N otherwise
 	brtmp="$WORK_DIR/br-E-$round-$wid.tmp"
 	if [ "$RANDOM_SAMPLE" = "1" ] && command -v shuf > /dev/null 2>&1; then
 		git -C "$REPO" for-each-ref --format='%(refname:short)' refs/heads/ \
@@ -455,30 +391,23 @@ worker_refs() {
 			--count=10 > "$brtmp"
 	fi
 	while IFS= read -r br; do
-		# skip our own churn refs — they're created/deleted under us
 		case "$br" in stress-churn/*) continue ;; esac
 		brname=$(echo "$br" | sed 's|.*/||')
 		bpath="$MNT/branches/heads/$brname"
 		if [ ! -d "$bpath" ]; then
-			# under churn a branch can be deleted between for-each-ref
-			# and our visit; tolerate that
+			# deleted by the churner
 			continue
 		fi
-		# capture FUSE's view of this branch
 		captured=$(cat "$bpath/hash" 2>/dev/null | tr -d '\n')
 		if [ -z "$captured" ]; then
 			echo "FAIL branch $brname: cannot read $bpath/hash" >> "$ERR_LOG"
 			count 0; continue
 		fi
-		# the captured SHA must be a real commit
 		if ! git -C "$REPO" cat-file -e "${captured}^{commit}" 2>/dev/null; then
 			echo "FAIL branch $brname: FUSE hash '$captured' is not a commit" >> "$ERR_LOG"
 			count 0; continue
 		fi
-		# verify msg via the immutable objects/ path — reading
-		# $bpath/msg would race with churner ref moves
 		count "$(verify_msg "$MNT/objects/$captured/msg" "$captured")"
-		# verify a blob via the immutable objects/ path keyed by the captured SHA
 		sample=$(git -C "$REPO" ls-tree -r --name-only "$captured" 2>/dev/null | sed '1q')
 		if [ -n "$sample" ] && [ -f "$MNT/objects/$captured/tree/$sample" ]; then
 			count "$(verify_blob "$MNT/objects/$captured/tree/$sample" "$captured" "$sample")"
@@ -486,7 +415,6 @@ worker_refs() {
 	done < "$brtmp"
 	rm -f "$brtmp"
 
-	# tags — random sample when enabled
 	tagtmp="$WORK_DIR/tag-E-$round-$wid.tmp"
 	if [ "$RANDOM_SAMPLE" = "1" ] && command -v shuf > /dev/null 2>&1; then
 		git -C "$REPO" tag -l | shuf -n 10 > "$tagtmp"
@@ -497,7 +425,7 @@ worker_refs() {
 		case "$tag" in stress-churn-*) continue ;; esac
 		tpath="$MNT/tags/$tag"
 		if [ ! -d "$tpath" ]; then
-			# tolerate deletion under us
+			# deleted by the churner
 			continue
 		fi
 		captured=$(cat "$tpath/hash" 2>/dev/null | tr -d '\n')
@@ -509,7 +437,6 @@ worker_refs() {
 			echo "FAIL tag $tag: FUSE hash '$captured' is not a commit" >> "$ERR_LOG"
 			count 0; continue
 		fi
-		# FUSE returned a self-consistent valid commit SHA for the tag
 		count 1
 	done < "$tagtmp"
 	rm -f "$tagtmp"
@@ -517,18 +444,10 @@ worker_refs() {
 	write_counts
 }
 
-# Scenario F: same-fh shared-descriptor stress
-# Independent-fd parallel reads (scenarios A/B) catch most corruption
-# bugs, but a shared-fd path (multiple kernel readers consuming a single
-# open file description) exercises per-gitfs_fh state in a way that
-# independent fds don't. Open a moderately-sized blob once via exec 3<,
-# then spawn N background readers on <&3. The kernel serializes their
-# read()s on the shared file position, so each gets a contiguous slice
-# and the union covers the file exactly. We verify the sum of slice
-# sizes equals the file size — torn or duplicated bytes from a broken
-# concurrent-read path would change that sum. The readers are dd, not
-# cat: GNU cat 9.11 sometimes reads a shared fd twice, even on local
-# filesystems.
+# three readers share one open file: the kernel serializes their
+# read()s on the shared offset, so the slices must add up to the file.
+# dd, not cat: GNU cat 9.11 sometimes reads a shared fd twice, even on
+# local filesystems.
 worker_same_fh() {
 	set +e
 	wid=$1; sha=$2; round=$3
@@ -536,11 +455,9 @@ worker_same_fh() {
 	cfile_p="$WORK_DIR/pass-F-$round-$wid"
 	cfile_f="$WORK_DIR/fail-F-$round-$wid"
 
-	# pick a blob between 64K and 1M — large enough to span multiple
-	# FUSE_READ requests, small enough to be cheap.
+	# 64K-1M: several FUSE_READs, still cheap
 	path=$(git -C "$REPO" ls-tree -r -l "$sha" 2>/dev/null \
 		| awk '$4 > 65536 && $4 < 1048576 {print substr($0, index($0, $5)); exit}')
-	# fallback: any non-empty blob if no medium one exists
 	if [ -z "$path" ]; then
 		path=$(git -C "$REPO" ls-tree -r -l "$sha" 2>/dev/null \
 			| awk '$4 > 0 {print substr($0, index($0, $5)); exit}')
@@ -566,8 +483,6 @@ worker_same_fh() {
 		out2="$WORK_DIR/F-$round-$wid-$i-2"
 		out3="$WORK_DIR/F-$round-$wid-$i-3"
 
-		# fd 3 is shared across the three forked readers; the kernel
-		# arbitrates the position, each gets a disjoint slice.
 		exec 3< "$fpath"
 		dd bs=128K status=none <&3 > "$out1" &
 		dd bs=128K status=none <&3 > "$out2" &
@@ -592,14 +507,6 @@ worker_same_fh() {
 	write_counts
 }
 
-# ── Ref churner ─────────────────────────────────────────────────────
-# When CHURN=1, this loop runs alongside the readers and continuously
-# mutates refs in a private namespace. Exercises the inotify-driven
-# invalidation path under sustained load. All mutations are confined
-# to refs/heads/stress-churn/* and refs/tags/stress-churn-*; HEAD is
-# moved transiently and restored on cleanup. Reads against these
-# private refs are filtered out in scenario E (see worker_refs).
-
 CHURN_HEAD_BACKUP=""
 
 churn_setup() {
@@ -608,9 +515,7 @@ churn_setup() {
 
 churn_cleanup() {
 	[ -z "$CHURN_HEAD_BACKUP" ] && return
-	# restore HEAD
 	git -C "$REPO" update-ref HEAD "$CHURN_HEAD_BACKUP" 2>/dev/null || true
-	# delete every stress-churn ref (loose + packed)
 	git -C "$REPO" for-each-ref --format='%(refname)' \
 		refs/heads/stress-churn/ refs/tags/ 2>/dev/null \
 		| while IFS= read -r r; do
@@ -673,17 +578,11 @@ run_churner() {
 	done
 }
 
-# ── Repo setup ──────────────────────────────────────────────────────
-
 setup_repo() {
-	REPO=$(mktemp -d "$TMPBASE/git-fs-stress-repo-XXXXXX")
+	REPO="$TESTDIR/repo"
 	OWN_REPO="$REPO"
+	new_repo "$REPO"
 
-	git -C "$REPO" init -q
-	git -C "$REPO" config user.email "stress@test"
-	git -C "$REPO" config user.name "stress"
-
-	# commit 1: deep tree + wide dir + binary files
 	mkdir -p "$REPO/a/b/c/d/e"
 	echo "deep content" > "$REPO/a/b/c/d/e/f.txt"
 	mkdir "$REPO/wide"
@@ -696,21 +595,16 @@ setup_repo() {
 	dd if=/dev/urandom bs=4096 count=1 of="$REPO/bin-medium.dat" 2>/dev/null
 	dd if=/dev/urandom bs=4096 count=16 of="$REPO/bin-large.dat" 2>/dev/null
 	dd if=/dev/urandom bs=4096 count=256 of="$REPO/bin-huge.dat" 2>/dev/null
-	# empty blob
 	: > "$REPO/empty.txt"
-	# symlink
 	(cd "$REPO" && ln -s a/b/c/d/e/f.txt link-to-f.txt)
-	git -C "$REPO" add .
-	git -C "$REPO" commit -q -m "commit 1: initial structure"
+	commit_all "$REPO" "commit 1: initial structure"
 	git -C "$REPO" tag v0.1
 
-	# commits 2-20: modify files, add new ones
 	i=2
 	while [ $i -le 20 ]; do
 		echo "revision $i" > "$REPO/a/b/c/d/e/f.txt"
 		echo "new-file-$i" > "$REPO/file-$i.txt"
-		git -C "$REPO" add .
-		git -C "$REPO" commit -q -m "commit $i"
+		commit_all "$REPO" "commit $i"
 		case $i in
 			5)  git -C "$REPO" branch br-1; git -C "$REPO" tag v0.2 ;;
 			10) git -C "$REPO" branch br-2; git -C "$REPO" tag v0.3 ;;
@@ -720,8 +614,6 @@ setup_repo() {
 		i=$((i + 1))
 	done
 }
-
-# ── Distribute workers across scenarios ─────────────────────────────
 
 run_workers() {
 	round=$1
@@ -733,15 +625,12 @@ run_workers() {
 		exit 1
 	fi
 
-	# assign workers to scenarios
-	# A: 22%, B: 22%, C: 22%, D: 11%, E: 11%, F: 11% (~10%)
 	wa=$((WORKERS * 22 / 100))
 	wb=$((WORKERS * 22 / 100))
 	wc_n=$((WORKERS * 22 / 100))
 	wd=$((WORKERS / 10))
 	we=$((WORKERS / 10))
 	wf=$((WORKERS - wa - wb - wc_n - wd - we))
-	# ensure at least 1 per scenario
 	[ $wa -lt 1 ] && wa=1
 	[ $wb -lt 1 ] && wb=1
 	[ $wc_n -lt 1 ] && wc_n=1
@@ -752,15 +641,11 @@ run_workers() {
 	wid=0
 	reader_pids=""
 
-	# start the churner alongside the read workers when CHURN=1.
-	# the churner runs in its own pid, separate from the readers, so
-	# we can wait on readers without waiting on the churner.
 	if [ "$CHURN" = "1" ]; then
 		run_churner "$round" &
 		churner_pid=$!
 	fi
 
-	# Scenario A: full tree walk
 	i=0
 	while [ $i -lt $wa ]; do
 		line=$(( (wid % num_commits) + 1 ))
@@ -771,7 +656,6 @@ run_workers() {
 		i=$((i + 1))
 	done
 
-	# Scenario B: same-file contention
 	i=0
 	while [ $i -lt $wb ]; do
 		worker_contention "$wid" "$head_sha" "$round" &
@@ -780,7 +664,6 @@ run_workers() {
 		i=$((i + 1))
 	done
 
-	# Scenario C: readdir + read interleave
 	i=0
 	while [ $i -lt $wc_n ]; do
 		worker_readdir_read "$wid" "$round" &
@@ -789,7 +672,6 @@ run_workers() {
 		i=$((i + 1))
 	done
 
-	# Scenario D: parent chain walk
 	i=0
 	while [ $i -lt $wd ]; do
 		worker_parent_chain "$wid" "$round" &
@@ -798,7 +680,6 @@ run_workers() {
 		i=$((i + 1))
 	done
 
-	# Scenario E: branch/tag cross-walk
 	i=0
 	while [ $i -lt $we ]; do
 		worker_refs "$wid" "$round" &
@@ -807,7 +688,6 @@ run_workers() {
 		i=$((i + 1))
 	done
 
-	# Scenario F: same-fh shared-descriptor stress
 	i=0
 	while [ $i -lt $wf ]; do
 		line=$(( (wid % num_commits) + 1 ))
@@ -818,8 +698,7 @@ run_workers() {
 		i=$((i + 1))
 	done
 
-	# wait only on read workers (bare `wait` would also block on the
-	# churner, which doesn't exit until we signal it)
+	# not a bare wait: the churner runs until told to stop
 	for pid in $reader_pids; do
 		wait "$pid" 2>/dev/null
 	done
@@ -831,14 +710,11 @@ run_workers() {
 	fi
 }
 
-# ── Ref mutation phase ──────────────────────────────────────────────
-
 run_mutation_phase() {
 	echo "  mutation: starting background readers..."
 	mut_pass=0
 	mut_fail=0
 
-	# start background readers on immutable object paths
 	bg_pids=""
 	num_commits=$(wc -l < "$WORK_DIR/commits.txt")
 	i=0
@@ -850,7 +726,6 @@ run_mutation_phase() {
 		i=$((i + 1))
 	done
 
-	# mutate the repo: add 5 commits + 1 branch
 	i=1
 	while [ $i -le 5 ]; do
 		echo "mutation $i" > "$REPO/mutated-$i.txt"
@@ -860,10 +735,9 @@ run_mutation_phase() {
 	done
 	git -C "$REPO" branch mutation-branch
 
-	# wait for ref cache to expire
+	# let the inotify watcher catch up
 	sleep 2
 
-	# verify HEAD updated
 	new_head=$(cat "$MNT/HEAD/hash")
 	new_head=$(printf '%s' "$new_head" | tr -d '\n')
 	actual_head=$(git -C "$REPO" rev-parse HEAD)
@@ -874,7 +748,6 @@ run_mutation_phase() {
 		mut_pass=$((mut_pass + 1))
 	fi
 
-	# verify new branch visible
 	if ls "$MNT/branches/heads/" | grep -q "mutation-branch"; then
 		mut_pass=$((mut_pass + 1))
 	else
@@ -882,7 +755,6 @@ run_mutation_phase() {
 		mut_fail=$((mut_fail + 1))
 	fi
 
-	# verify new file readable
 	r=$(verify_blob "$MNT/HEAD/tree/mutated-5.txt" "$actual_head" "mutated-5.txt")
 	if [ "$r" = "1" ]; then
 		mut_pass=$((mut_pass + 1))
@@ -890,17 +762,13 @@ run_mutation_phase() {
 		mut_fail=$((mut_fail + 1))
 	fi
 
-	# write mutation counts
 	echo "$mut_pass" > "$WORK_DIR/pass-mut-checks"
 	echo "$mut_fail" > "$WORK_DIR/fail-mut-checks"
 
-	# wait for background readers
 	for pid in $bg_pids; do
 		wait "$pid" 2>/dev/null || true
 	done
 }
-
-# ── Aggregate results ───────────────────────────────────────────────
 
 aggregate() {
 	total_pass=0
@@ -914,36 +782,12 @@ aggregate() {
 	echo "$total_pass" "$total_fail"
 }
 
-# Background monitor: samples git-fs's /proc/<pid>/status every
-# MONITOR_INTERVAL seconds and appends a one-line summary to a state
-# log. When git-fs disappears, the monitor records "DIED" with the
-# elapsed time and exits. On test failure, print the tail of this log
-# so we see RSS / Threads / FDSize trajectory leading up to the crash.
-#
-# Polling has an inherent miss window: by the time we detect the
-# process is gone, /proc/<pid> is unreadable, so the LAST captured
-# sample is our last view of git-fs alive. A 2s interval gives us a
-# reasonable trajectory without flooding the log.
-
 MONITOR_INTERVAL="${MONITOR_INTERVAL:-2}"
 STATE_LOG=""
 monitor_pid=""
 
 run_monitor() {
-	# wait briefly for git-fs to start
-	t=0
-	pid=""
-	while [ $t -lt 50 ] && [ -z "$pid" ]; do
-		pid=$(pgrep -f "git-fs.*$MNT" 2>/dev/null | head -1)
-		[ -z "$pid" ] && pid=$(pgrep -x git-fs 2>/dev/null | head -1)
-		[ -n "$pid" ] && break
-		sleep 0.1
-		t=$((t + 1))
-	done
-	if [ -z "$pid" ]; then
-		echo "monitor: never found git-fs pid" >> "$STATE_LOG"
-		return
-	fi
+	pid=$GITFS_PID
 	echo "monitor: tracking pid=$pid (interval=${MONITOR_INTERVAL}s)" >> "$STATE_LOG"
 	t0=$(date +%s)
 	while [ ! -f "$WORK_DIR/monitor-stop" ]; do
@@ -952,37 +796,41 @@ run_monitor() {
 			echo "[T+$((now - t0))s] DIED — /proc/$pid gone" >> "$STATE_LOG"
 			return
 		fi
-		# selected fields, formatted compact for tailability
 		now=$(date +%s)
-		state=$(awk '/^State:/{print $2}' "/proc/$pid/status" 2>/dev/null)
-		threads=$(awk '/^Threads:/{print $2}' "/proc/$pid/status" 2>/dev/null)
-		rss=$(awk '/^VmRSS:/{print $2}' "/proc/$pid/status" 2>/dev/null)
-		hwm=$(awk '/^VmHWM:/{print $2}' "/proc/$pid/status" 2>/dev/null)
-		size=$(awk '/^VmSize:/{print $2}' "/proc/$pid/status" 2>/dev/null)
-		fds=$(awk '/^FDSize:/{print $2}' "/proc/$pid/status" 2>/dev/null)
-		printf '[T+%ds] state=%s threads=%s VmRSS=%sk VmHWM=%sk VmSize=%sk FDSize=%s\n' \
-			$((now - t0)) "$state" "$threads" "$rss" "$hwm" "$size" "$fds" \
+		echo "[T+$((now - t0))s] $(res_fds "$pid") $(res_mem "$pid")" \
 			>> "$STATE_LOG"
 		sleep "$MONITOR_INTERVAL"
 	done
 }
 
-# Print a final snapshot + the monitor trajectory directly to stdout
-# so it survives the head -80 truncation of ERR_LOG.
+print_resource_summary() {
+	samples="$WORK_DIR/samples"
+	grep 'total=' "$STATE_LOG" > "$samples" 2>/dev/null || true
+	[ -s "$samples" ] || return 0
+	echo "  resources (start / end / peak over $(wc -l < "$samples") samples):"
+	for f in total memfd memfd_bytes pack rss anon file threads; do
+		printf "    %-12s %s / %s / %s\n" "$f" "$(res_first "$samples" $f)" \
+			"$(res_last "$samples" $f)" "$(res_peak "$samples" $f)"
+	done
+}
+
 print_gitfs_diagnostics() {
 	echo ""
 	echo "=== git-fs process state at time of failure ==="
-	pid=$(pgrep -f "git-fs.*$MNT" 2>/dev/null | head -1)
-	[ -z "$pid" ] && pid=$(pgrep -x git-fs 2>/dev/null | head -1)
-	if [ -z "$pid" ]; then
+	pid=$GITFS_PID
+	if [ ! -d "/proc/$pid" ]; then
 		echo "(no git-fs pid found — process is gone)"
 	else
 		echo "pid=$pid"
-		grep -E 'State|Threads|VmSize|VmRSS|VmHWM|VmPeak|FDSize|voluntary_ctxt|nonvoluntary' \
+		grep -E 'State|Threads|VmSize|VmRSS|VmHWM|VmPeak|Rss|voluntary_ctxt|nonvoluntary' \
 			"/proc/$pid/status" 2>/dev/null || echo "(/proc/$pid/status unreadable)"
+		echo "fds: $(res_fds "$pid")"
 		echo "--- /proc/$pid/smaps_rollup ---"
 		head -8 "/proc/$pid/smaps_rollup" 2>/dev/null || echo "(unreadable)"
 	fi
+	echo ""
+	echo "=== git-fs stderr (last 10 lines) ==="
+	tail -10 "$GITFS_LOG"
 	echo ""
 	echo "=== git-fs trajectory (last 30 monitor samples) ==="
 	if [ -n "$STATE_LOG" ] && [ -f "$STATE_LOG" ]; then
@@ -1003,12 +851,9 @@ print_gitfs_diagnostics() {
 	ls -la "$MNT" 2>&1 | head -8
 }
 
-# ── Main ────────────────────────────────────────────────────────────
-
 echo "test_stress:"
 echo "  config: WORKERS=$WORKERS ROUNDS=$ROUNDS DURATION=${DURATION:-unset} CHURN=$CHURN RANDOM_SAMPLE=$RANDOM_SAMPLE"
 
-# setup
 if [ -n "$EXT_REPO" ]; then
 	REPO="$EXT_REPO"
 	echo "  repo: $REPO (external)"
@@ -1018,7 +863,6 @@ else
 	echo "  repo: $REPO"
 fi
 
-# full commit list (used as sampling source under RANDOM_SAMPLE)
 ALL_COMMITS="$WORK_DIR/commits-all.txt"
 git -C "$REPO" rev-list --all > "$ALL_COMMITS"
 total_commits=$(wc -l < "$ALL_COMMITS")
@@ -1029,7 +873,6 @@ if [ "$total_commits" -eq 0 ]; then
 	exit 1
 fi
 
-# CHURN requires write access to the repo (we update-ref under it).
 if [ "$CHURN" = "1" ]; then
 	if ! git -C "$REPO" update-ref refs/heads/stress-churn-probe HEAD 2>/dev/null \
 		|| ! git -C "$REPO" update-ref -d refs/heads/stress-churn-probe 2>/dev/null; then
@@ -1040,8 +883,6 @@ if [ "$CHURN" = "1" ]; then
 	echo "  churn: enabled (interval=${CHURN_INTERVAL}s, head_backup=${CHURN_HEAD_BACKUP})"
 fi
 
-# (re)build the per-round commit sample. shuf isn't POSIX but is on
-# every modern linux; fall back to head if absent.
 sample_commits() {
 	if [ "$RANDOM_SAMPLE" = "1" ] && command -v shuf > /dev/null 2>&1; then
 		shuf -n "$MAX_COMMITS" "$ALL_COMMITS" > "$WORK_DIR/commits.txt"
@@ -1051,23 +892,13 @@ sample_commits() {
 }
 sample_commits
 
-# mount
-(cd "$REPO" && "$GITFS" -m "$MNT")
+mount_gitfs "$REPO" "$MNT"
+echo "  mount: $MNT (pid $GITFS_PID)"
 
-# poll until mount is ready (up to 5 seconds)
-i=0
-while [ $i -lt 50 ]; do
-	ls "$MNT/HEAD" > /dev/null 2>&1 && break
-	sleep 0.1
-	i=$((i + 1))
-done
-if ! ls "$MNT/HEAD" > /dev/null 2>&1; then
-	echo "error: mount failed or not ready after 5s" >&2
-	exit 1
-fi
-echo "  mount: $MNT"
+STATE_LOG="$WORK_DIR/state.log"
+run_monitor &
+monitor_pid=$!
 
-# run stress rounds
 T0=$(date +%s)
 round=1
 while [ $round -le "$ROUNDS" ]; do
@@ -1083,16 +914,12 @@ while [ $round -le "$ROUNDS" ]; do
 		printf "  round %d/%d: " "$round" "$ROUNDS"
 	fi
 
-	# resample commits when running random
 	[ "$RANDOM_SAMPLE" = "1" ] && sample_commits
 
 	run_workers "$round"
 
-	# check for failures
 	if [ -s "$ERR_LOG" ]; then
 		echo "FAILED"
-		# capture git-fs state before exiting so the dump tells us
-		# whether the failure correlates with pool/memory pressure
 		print_gitfs_diagnostics
 		echo
 		echo "=== FAILURES ==="
@@ -1111,7 +938,6 @@ while [ $round -le "$ROUNDS" ]; do
 	round=$((round + 1))
 done
 
-# ref mutation phase (only for own repos — skip for external)
 if [ -n "$OWN_REPO" ]; then
 	echo "  mutation phase:"
 	run_mutation_phase
@@ -1127,7 +953,7 @@ if [ -n "$OWN_REPO" ]; then
 	echo "  mutation: passed"
 fi
 
-# final report
+print_resource_summary
 counts=$(aggregate)
 pass=$(echo "$counts" | cut -d' ' -f1)
 fail=$(echo "$counts" | cut -d' ' -f2)
@@ -1138,12 +964,9 @@ if [ "$total" -eq 0 ]; then
 	echo "error: no integrity checks were executed" >&2
 	exit 1
 fi
-# actual rounds run: the round counter is incremented after each
-# completed round, so when the loop exits with the time cap or the
-# ROUNDS cap, `round - 1` is the last finished round.
 rounds_run=$((round - 1))
 [ $rounds_run -lt 1 ] && rounds_run=1
-# sanity: expect at least 10 checks per worker per round (blobs + hashes + msgs)
+# at least 10 checks per worker and round
 min_expected=$((WORKERS * rounds_run * 10))
 if [ "$total" -lt "$min_expected" ]; then
 	echo "error: only $total checks ran, expected >= $min_expected" >&2
